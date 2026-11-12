@@ -63,7 +63,7 @@ Proc.Git(repo, "worktree", "add", "-b", branch, worktree, baseCommit);
 var runDir = Path.Combine(worktree, ".prp-run");
 Directory.CreateDirectory(runDir);
 
-var startedAt = DateTimeOffset.UtcNow;
+var startedAt = DateTime.UtcNow;
 string agentJson;
 if (opt.Replay is not null)
 {
@@ -91,7 +91,7 @@ else
     agentJson = claude.Stdout;
 }
 File.WriteAllText(Path.Combine(runDir, "agent-result.json"), agentJson);
-var finishedAt = DateTimeOffset.UtcNow;
+var finishedAt = DateTime.UtcNow;
 
 Console.WriteLine("running gates in the worktree...");
 var verify = Proc.Run(Paths.Bash(), ["tools/verify.sh"], worktree);
