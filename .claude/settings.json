@@ -1,0 +1,45 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(dotnet test *)",
+      "Bash(dotnet format *)",
+      "Bash(dotnet restore *)",
+      "Bash(dotnet new *)",
+      "Bash(dotnet sln *)",
+      "Bash(dotnet add *)",
+      "Bash(dotnet list *)",
+      "Bash(bash tools/verify.sh)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git merge-base *)",
+      "Bash(git rev-parse *)",
+      "Bash(docker build *)",
+      "Bash(docker info)",
+      "WebFetch(domain:www.npgsql.org)",
+      "WebFetch(domain:www.postgresql.org)",
+      "WebFetch(domain:dotnet.testcontainers.org)",
+      "WebFetch(domain:joshclose.github.io)",
+      "WebFetch(domain:learn.microsoft.com)"
+    ],
+    "deny": [
+      "Edit(/specs/**)",
+      "Edit(/.claude/**)",
+      "Edit(/.github/**)",
+      "Edit(/metrics/**)",
+      "Edit(/CLAUDE.md)",
+      "Bash(git push *)",
+      "Bash(git clone *)",
+      "Bash(git remote *)",
+      "Bash(git worktree *)",
+      "Bash(gh *)",
+      "Bash(curl *)",
+      "Bash(wget *)"
+    ]
+  }
+}

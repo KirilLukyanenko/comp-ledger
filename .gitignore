@@ -19,3 +19,7 @@ appsettings.*.local.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Agent run artifacts and Claude Code worktrees
+.prp-run/
+.claude/worktrees/

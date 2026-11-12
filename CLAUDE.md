@@ -70,7 +70,7 @@ Message format: `PRP-NNN Tn: <imperative summary>`. End every commit you make wh
 
 ```
 Spec: PRP-NNN
-Agent-Run: <value of the AGENT_RUN_ID environment variable>
+Agent-Run: <run id passed to /implement-prp>
 ```
 
-These trailers are how the project measures which changes were written by agents and which needed human edits. Never fabricate an `Agent-Run` value; if `AGENT_RUN_ID` is not set, omit that trailer.
+These trailers are how the project measures which changes were written by agents and which needed human edits. Never invent an `Agent-Run` value. If no run id was given, omit that trailer.
