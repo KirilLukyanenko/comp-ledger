@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Draft |
-| Version    | 1.0 |
+| Version    | 1.1 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |
 | Depends on | none (first feature; includes the solution skeleton) |
@@ -47,31 +47,35 @@ Tenant-configurable components are out of scope (see section 5).
 
 ### 3.3 CSV format
 
-- UTF-8, BOM allowed. Comma delimiter. RFC 4180 quoting. Header row required.
-- Required columns, in any order: `employee_id, component, effective_from, amount, currency`. Header names are trimmed and matched case-insensitively. Any other column is an error.
-- Field values are trimmed. An empty `currency` means "no currency".
-- **Row numbers** in errors count the header as row 1, so the first data row is row 2 (what a user sees in a spreadsheet).
-- A trailing empty line is not a row.
+- **Encoding.** UTF-8, BOM allowed. Bytes that are not valid UTF-8 are a file-level `INVALID_ENCODING` error, and reading stops there.
+- **Syntax.** Comma delimiter, RFC 4180 quoting. A quoted field may contain commas, doubled quotes and line breaks.
+- **Header.** The first record is always the header; there is no headerless mode. A file that starts with data gets header errors.
+- **Columns.** Required, in any order: `employee_id, component, effective_from, amount, currency`. Header names are trimmed and matched case-insensitively. Any other column is an error. Errors always name columns by their canonical lowercase name, except `UNKNOWN_COLUMN` (see 3.4).
+- **Trimming.** After unquoting, leading and trailing whitespace (space, tab, CR, LF) is removed from every value, quoted or not. An empty `currency` means "no currency".
+- **Row numbers** count records, not physical lines. The header is row 1 and the first data record is row 2 (what a user sees in a spreadsheet). A record whose quoted field spans several lines is one row.
+- **Blank lines.** Empty or whitespace-only lines after the last data record are ignored, however many there are. A blank line anywhere before the last data record is a row, and it gets `MALFORMED_CSV`.
+- **Patterns** below are matched against the whole trimmed value and use ASCII characters only: `[0-9]` means the digits 0 to 9, not other Unicode digits. In .NET, use explicit character classes and the anchors `\A` and `\z`: never `\d`, and never `$` (it also matches before a final line break).
 
 Field rules:
 
 | Column           | Rule |
 |------------------|------|
-| `employee_id`    | 1 to 64 chars, `^[A-Za-z0-9._-]+$`, case-sensitive |
-| `component`      | exact code from 3.2 |
-| `effective_from` | `yyyy-MM-dd`, a real calendar date, from 1900-01-01 to 2999-12-31 |
-| `amount`         | `^\d{1,15}(\.\d{1,4})?$`; dot as decimal separator; no sign, grouping or exponent; within the component's range. More than 4 decimals is an error, never rounded |
-| `currency`       | `^[A-Z]{3}$` when present; presence must match the component (3.2). Validation against the ISO 4217 list is out of scope |
+| `employee_id`    | `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`: 1 to 64 chars, starting with a letter or digit (so `.` and `..` are invalid), case-sensitive |
+| `component`      | exact code from 3.2, case-sensitive |
+| `effective_from` | `^[0-9]{4}-[0-9]{2}-[0-9]{2}$` and a real calendar date, otherwise `INVALID_DATE` (so `0000-01-01` and `2026-02-30` are `INVALID_DATE`). Then from 1900-01-01 to 2999-12-31, otherwise `DATE_OUT_OF_RANGE` |
+| `amount`         | `^[0-9]{1,15}(\.[0-9]{1,4})?$`: dot as decimal separator; no sign, grouping or exponent. More than 4 decimals is an error, never rounded. Then within the component's range. For the money components the format already caps the value, so `AMOUNT_OUT_OF_RANGE` can only happen for `BONUS_TARGET_PCT` |
+| `currency`       | First, presence must match the component (3.2). Then, when present and allowed, `^[A-Z]{3}$`. Validation against the ISO 4217 list is out of scope |
 
 ### 3.4 Error codes
 
 | Code                    | Level  | When |
 |-------------------------|--------|------|
-| `EMPTY_FILE`            | file   | No header, or header with no data rows |
-| `MISSING_COLUMN`        | header | A required column is absent |
-| `UNKNOWN_COLUMN`        | header | A column not in the list |
-| `DUPLICATE_COLUMN`      | header | The same column appears twice |
-| `MALFORMED_CSV`         | row    | The row cannot be parsed or has the wrong number of fields |
+| `EMPTY_FILE`            | file   | Nothing but a BOM and whitespace, or a valid header with no data rows |
+| `INVALID_ENCODING`      | file   | Bytes that are not valid UTF-8. Reading stops at that point |
+| `MISSING_COLUMN`        | header | A required column is absent. One error per missing column |
+| `UNKNOWN_COLUMN`        | header | A column not in the list. One error per occurrence, so `grade,grade` gives two |
+| `DUPLICATE_COLUMN`      | header | A required column appears more than once. One error per extra occurrence |
+| `MALFORMED_CSV`         | row    | The row cannot be parsed, has the wrong number of fields, or is a blank line (3.3). Such a row gets no other errors |
 | `INVALID_EMPLOYEE_ID`   | field  | Breaks the `employee_id` rule |
 | `UNKNOWN_COMPONENT`     | field  | Not in the catalogue |
 | `INVALID_DATE`          | field  | Not `yyyy-MM-dd` or not a real date |
@@ -80,12 +84,26 @@ Field rules:
 | `AMOUNT_OUT_OF_RANGE`   | field  | Outside the component's range |
 | `CURRENCY_REQUIRED`     | field  | Component needs a currency and it is empty |
 | `CURRENCY_NOT_ALLOWED`  | field  | Component takes no currency and one is given |
-| `INVALID_CURRENCY`      | field  | Not three uppercase letters |
-| `DUPLICATE_KEY_IN_FILE` | row    | Two or more rows share `(employee_id, component, effective_from)`. Every row of the group gets this error |
+| `INVALID_CURRENCY`      | field  | A currency is present and allowed, but it is not three uppercase ASCII letters |
+| `DUPLICATE_KEY_IN_FILE` | row    | Two or more rows **without other errors** share `(employee_id, component, effective_from)`. Every row of the group gets this error. Rows that already have errors are not part of any group |
 
-Error object: `{ "row": 4, "column": "amount", "code": "INVALID_AMOUNT", "message": "..." }`. `column` is `null` for file- and row-level errors.
-If the header is invalid, data rows are not validated. One row can have several field errors.
-The response contains at most the first 100 errors ordered by `(row, column)`; `errorCount` is the full total.
+Error object: `{ "row": 4, "column": "amount", "code": "INVALID_AMOUNT", "message": "..." }`. `message` is free text and not part of the contract.
+
+| Error level | `row` | `column` |
+|-------------|-------|----------|
+| file (`EMPTY_FILE`, `INVALID_ENCODING`) | `null` | `null` |
+| header | `1` | `MISSING_COLUMN`, `DUPLICATE_COLUMN`: the canonical name. `UNKNOWN_COLUMN`: the name as written in the file, trimmed |
+| row (`MALFORMED_CSV`, `DUPLICATE_KEY_IN_FILE`) | the row number | `null` |
+| field | the row number | the canonical name |
+
+Rules:
+
+- **At most one error per field.** Checks run in the order the field rules list them, and the first failure wins. For example, `BONUS_TARGET_PCT` with currency `eur` gives only `CURRENCY_NOT_ALLOWED`. A row can still have errors in several fields.
+- **Unknown component.** If a row's component is unknown, the checks that depend on the component (currency presence, amount range) are skipped for that row. Checks that don't depend on it (`employee_id`, date, amount format, currency format when a currency is present) still run.
+- **Header errors stop processing.** If the header has any error, no data rows are read. The batch contains only the header errors, `rows.total` is 0, and `EMPTY_FILE` is not added.
+- **`INVALID_ENCODING` stops reading.** Errors found before it are kept, and `rows.total` counts the data rows read before it.
+- **Order.** By `row` ascending, with `null` first. Within row 1: header errors by the column's position in the file, then `MISSING_COLUMN` errors in canonical column order. Within a data row: the row-level error first, then field errors in canonical column order (`employee_id`, `component`, `effective_from`, `amount`, `currency`).
+- **Cap.** The response and the stored batch contain the first 100 errors in that order. `errorCount` is the full total.
 
 ### 3.5 Ingestion semantics
 
@@ -102,16 +120,31 @@ The response contains at most the first 100 errors ordered by `(row, column)`; `
 
 Base path `/api/v1`. JSON uses camelCase. Dates are `"yyyy-MM-dd"`. Amounts are JSON numbers; their scale is not part of the contract, so clients compare numerically.
 
-**Tenant resolution (temporary).** Authentication is out of scope. In this PRP the tenant comes from the `X-Tenant-Id` header (a UUID). If it is missing, malformed or not a known tenant, the response is `401`. This header is a stand-in for a real identity later. The rule that matters now: no tenant-owned data can be read or written without a tenant context, and PostgreSQL row-level security enforces it.
+**Tenant resolution (temporary).** Authentication is out of scope. In this PRP the tenant comes from the `X-Tenant-Id` header. This header is a stand-in for a real identity later. The rule that matters now: no tenant-owned data can be read or written without a tenant context, and PostgreSQL row-level security enforces it.
+
+- The value must be a UUID in the hyphenated `8-4-4-4-12` form; hex digits are case-insensitive.
+- Anything else gives `401`: a missing or empty header, braces, no hyphens, any other text, the nil UUID, or a UUID that is not a known tenant.
+- `/health` and `POST /api/v1/tenants` ignore the header completely, even when it is malformed.
 
 | Method | Path | Tenant | Result |
 |--------|------|--------|--------|
-| GET  | `/health` | no | `200 {"status":"ok"}` |
-| POST | `/api/v1/tenants` | no | body `{"name":"Acme"}` gives `201 {"id","name"}`. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
-| POST | `/api/v1/ingestions` | yes | body is CSV with `Content-Type: text/csv`. Returns `201` with a batch (status `Applied`) and a `Location` header, or `422` with a batch (status `Rejected`). Other content types give `415`; a body over `Ingestion:MaxBodyBytes` (default 256 MiB) gives `413` |
-| GET  | `/api/v1/ingestions/{batchId}` | yes | `200` batch, or `404` if it does not exist **in this tenant** |
-| GET  | `/api/v1/employees/{employeeId}/compensation?asOf=yyyy-MM-dd` | yes | Values in effect on `asOf` (default: today UTC). `404` if the employee has no values in this tenant at all; `200` with empty `components` if they have values but none in effect on that date. Invalid `asOf` gives `400` |
-| GET  | `/api/v1/employees/{employeeId}/compensation/history?component=CODE` | yes | All current periods, ordered by component, then `effectiveFrom`. `component` is optional; an unknown code gives `400`. `404` as above |
+| GET  | `/health` | no | `200 {"status":"ok"}`. Liveness only: it doesn't touch the database |
+| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). Another content type gives `415`. Malformed JSON, or a `name` that is missing or not 1 to 200 characters after trimming, gives `400`. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
+| POST | `/api/v1/ingestions` | yes | Body is CSV (content type rules below). Returns `201` with a batch (status `Applied`) and `Location: /api/v1/ingestions/{batchId}`, or `422` with a batch (status `Rejected`) and no `Location`. A body over `Ingestion:MaxBodyBytes` (default 256 MiB) gives `413` |
+| GET  | `/api/v1/ingestions/{batchId}` | yes | `200` batch. `404` if it does not exist **in this tenant**, or if `batchId` is not a UUID |
+| GET  | `/api/v1/employees/{employeeId}/compensation?asOf=yyyy-MM-dd` | yes | Values in effect on `asOf`, ordered by component code (ordinal). `asOf` is optional and defaults to today (UTC). When present, it must be a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, otherwise `400`; an empty `asOf=` is also `400`. `404` if the employee has no values in this tenant at all; `200` with empty `components` if they have values but none in effect on that date |
+| GET  | `/api/v1/employees/{employeeId}/compensation/history?component=CODE` | yes | All current periods, ordered by component, then `effectiveFrom`. `component` is optional and must be an exact, case-sensitive code from 3.2; an empty or unknown value gives `400`. A known code with no values for this employee gives `200` with empty `periods`. `404` only if the employee has no values at all |
+
+**Request checks for `POST /api/v1/ingestions`**, in this order; the first one that fails decides the response:
+
+1. Tenant: `401`.
+2. Content type: `415` unless the media type is `text/csv` (compared case-insensitively). Parameters are allowed, but a `charset` other than `utf-8` (case-insensitive) gives `415`. A missing `Content-Type` gives `415`. Prefix matches such as `text/csv-schema` give `415`.
+3. Declared size: a `Content-Length` over the limit gives `413` before any of the body is read.
+4. Streamed size: a chunked body that goes over the limit while it is being read gives `413` on a best-effort basis. The server may close the connection, so the client may see a reset instead.
+
+A batch is recorded only for `201` and `422`. A request refused with `401`, `413` or `415` leaves no batch and changes nothing.
+
+**Order of checks on GET endpoints:** query-parameter validation (`400`) happens before the resource lookup (`404`).
 
 Batch resource:
 
@@ -146,7 +179,7 @@ As-of response (`effectiveTo` is inclusive: the day before the next value's `eff
 
 History response: `{ "employeeId": "...", "periods": [ { "component", "amount", "currency", "effectiveFrom", "effectiveTo" } ] }`.
 
-Errors other than a rejected batch use RFC 7807 `ProblemDetails`.
+Every error response uses RFC 7807 `ProblemDetails`, including `404` for unknown routes and for the disabled tenant admin route. There are two exceptions: the `422` rejected batch, whose body is the batch, and a streamed `413` where the connection is closed.
 
 ### 3.7 Non-functional budgets
 
@@ -154,9 +187,9 @@ These are starting budgets. The first CI run calibrates them, and any change is 
 
 | Budget | Target |
 |--------|--------|
-| Throughput | 1,000,000-row file (about 45 MB) ingested end to end (HTTP upload until `201`) in 60 s or less on a GitHub-hosted `ubuntu-latest` runner, PostgreSQL 17 in Testcontainers with default settings |
-| Memory | API process peak working set during the 1M-row ingest is 300 MB or less, **and** the peak at 1M rows exceeds the peak at 100k rows by 64 MB or less. The second check is the real test of streaming |
-| Logging | One structured log line per batch: tenant id, batch id, status, row counts, duration. **Never** log row contents or amounts: salary data is personal data |
+| Throughput | 1,000,000-row file ingested end to end (HTTP upload until `201`) in 60 s or less on a GitHub-hosted `ubuntu-latest` runner, PostgreSQL 17 in Testcontainers with default settings. The budget is per row count; the gate's generator averages about 45 bytes per row (about 45 MB for 1M rows) |
+| Memory | The metric is the API process's peak resident set size: `VmHWM` in `/proc/<pid>/status`, which .NET reports as `Process.PeakWorkingSet64`. Each file size runs in a fresh container after the same one-row warm-up upload. Peak at 1M rows: 300 MiB or less. Peak at 1M rows minus peak at 100k rows: 64 MiB or less. The second check is the real test of streaming |
+| Logging | Console logs in JSON (`Logging:Console:FormatterName=json`). Exactly one entry per batch, with these message-template properties: `TenantId`, `BatchId`, `Status`, `TotalRows`, `InsertedRows`, `CorrectedRows`, `UnchangedRows`, `ErrorCount`, `DurationMs`. **Never** log row contents or amounts: salary data is personal data |
 
 ## 4. Acceptance examples (public)
 
@@ -300,7 +333,15 @@ comp-ledger/
 **Role provisioning is the environment's job, not the migrations' job.** Before the first start, the environment creates `comp_app` (NOLOGIN) and a LOGIN role in it with a generated password. The integration-test fixture and the holdout harness both do this. Migrations grant privileges to `comp_app` and fail with a clear message if it does not exist. **No password appears anywhere in the repository.**
 
 Runtime configuration (environment variables):
-`ConnectionStrings__App`, `ConnectionStrings__Migrations`, `Database__MigrateOnStartup` (`true`/`false`), `TenantAdminApi__Enabled`, `Ingestion__MaxBodyBytes`.
+`ConnectionStrings__App`, `ConnectionStrings__Migrations`, `Database__MigrateOnStartup` (`true`/`false`), `TenantAdminApi__Enabled`, `Ingestion__MaxBodyBytes`. Nothing else is required; `ASPNETCORE_ENVIRONMENT` may be left unset (Production).
+
+- `ConnectionStrings__Migrations` connects as the role that owns the schema. In tests this is the container's superuser.
+- `ConnectionStrings__App` connects as a LOGIN role that is a member of `comp_app`, with no superuser and no `BYPASSRLS`. Its name is not fixed; the test fixture and the holdout harness both use `comp_app_login`.
+
+Container contract:
+
+- The image is built from `mcr.microsoft.com/dotnet/aspnet:10.0` and listens on port 8080. The base image includes a shell and `cat`, which the load gate needs to read `/proc/1/status`. Don't switch to a chiseled or distroless image.
+- With `Database__MigrateOnStartup=true`, migrations finish before the app starts listening, so a `200` from `/health` means the schema is in place.
 
 ### 6.5 Known gotchas
 
@@ -314,6 +355,9 @@ Runtime configuration (environment variables):
 8. **Parse with invariant culture.** Check the amount against the regex first, then `decimal.Parse(..., CultureInfo.InvariantCulture)`. Parse dates with `DateOnly.TryParseExact("yyyy-MM-dd", InvariantCulture)`.
 9. **Take the advisory lock after staging, not before.** Otherwise one slow upload blocks every other upload of that tenant while bytes are still arriving.
 10. **Compare numerically, not as strings.** `numeric` equality makes `50000 = 50000.0000` true. Compare currency with `IS DISTINCT FROM` because it can be `NULL`.
+11. **A default `StreamReader` hides bad bytes.** It replaces invalid UTF-8 with U+FFFD and carries on. Use `new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)` and turn the `DecoderFallbackException` into `INVALID_ENCODING`.
+12. **.NET regex traps.** `\d` matches any Unicode digit (Arabic-Indic, fullwidth), and `decimal.Parse` then fails with a 500. `$` also matches before a final `\n`. Use `[0-9]` with `\A`…`\z`.
+13. **Kestrel's own 404 and 413 have no body.** Use `AddProblemDetails()` with `UseStatusCodePages()` so unknown routes and size-limit errors also return `ProblemDetails`.
 
 ## 7. Implementation blueprint
 
@@ -466,7 +510,7 @@ If a level fails, fix the code and rerun that level. Never weaken, skip or delet
 The implementing agent sees this PRP and the repository. It does not see:
 
 1. **Holdout behaviour scenarios** in a separate repository. They run the API container against Testcontainers PostgreSQL and call it over HTTP only, with data that differs from section 4.
-2. **The load gate** for section 3.7: 100k-row and 1M-row uploads, with wall time and peak working set measured.
+2. **The load gate** for section 3.7: 100k-row and 1M-row uploads, with wall time and peak resident set size measured.
 3. **AI review against this PRP.** A reviewer agent receives the PRP and the diff, and must point to the code and test behind each section-3 rule, or report the rule as missing.
 
 Recorded for every run: whether the first complete attempt passed all gates, how many human commits the PR needed before merge, and tokens, cost and wall time of the agent runs.
@@ -476,3 +520,4 @@ Recorded for every run: whether the first complete attempt passed all gates, how
 | Version | Date       | Change |
 |---------|------------|--------|
 | 1.0     | 2026-11-12 | First version |
+| 1.1     | 2026-11-12 | Resolved the 45 gaps found while writing the holdout scenarios (still Draft, nothing implemented). 3.3: encoding error, header-first rule, trimming, record-based row numbers, blank lines, ASCII-only patterns, stricter `employee_id`, year 0000. 3.4: `INVALID_ENCODING`; `row` and `column` per error level; one error per field and check order; unknown-component behaviour; header errors stop processing; duplicates only among rows without errors; exact ordering. 3.6: `X-Tenant-Id` format; request-check order; content-type rules; no batch for 401/413/415; `Location` only on 201; `asOf` and `component` validation; component order; tenant creation validation; ProblemDetails everywhere. 3.7: memory metric is process peak RSS in MiB, fresh container per size; JSON log fields. 6.4: roles, base image, migrations before listening. 6.5: gotchas 11–13 |
