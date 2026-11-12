@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Draft |
-| Version    | 1.1 |
+| Version    | 1.2 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |
 | Depends on | none (first feature; includes the solution skeleton) |
@@ -50,10 +50,10 @@ Tenant-configurable components are out of scope (see section 5).
 - **Encoding.** UTF-8, BOM allowed. Bytes that are not valid UTF-8 are a file-level `INVALID_ENCODING` error, and reading stops there.
 - **Syntax.** Comma delimiter, RFC 4180 quoting. A quoted field may contain commas, doubled quotes and line breaks.
 - **Header.** The first record is always the header; there is no headerless mode. A file that starts with data gets header errors.
-- **Columns.** Required, in any order: `employee_id, component, effective_from, amount, currency`. Header names are trimmed and matched case-insensitively. Any other column is an error. Errors always name columns by their canonical lowercase name, except `UNKNOWN_COLUMN` (see 3.4).
+- **Columns.** Required, in any order: `employee_id, component, effective_from, amount, currency`. Header names are trimmed with the same whitespace set as values (see Trimming) and matched case-insensitively. Any other column is an error. Errors always name columns by their canonical lowercase name, except `UNKNOWN_COLUMN` (see 3.4).
 - **Trimming.** After unquoting, leading and trailing whitespace (space, tab, CR, LF) is removed from every value, quoted or not. An empty `currency` means "no currency".
 - **Row numbers** count records, not physical lines. The header is row 1 and the first data record is row 2 (what a user sees in a spreadsheet). A record whose quoted field spans several lines is one row.
-- **Blank lines.** Empty or whitespace-only lines after the last data record are ignored, however many there are. A blank line anywhere before the last data record is a row, and it gets `MALFORMED_CSV`.
+- **Blank lines.** Empty or whitespace-only lines after the last data record are ignored, however many there are. A blank line anywhere before the last data record is a row, and it gets `MALFORMED_CSV`. A record with exactly one field that is empty after unquoting and trimming (for example a line holding only `""`) counts as a blank line.
 - **Patterns** below are matched against the whole trimmed value and use ASCII characters only: `[0-9]` means the digits 0 to 9, not other Unicode digits. In .NET, use explicit character classes and the anchors `\A` and `\z`: never `\d`, and never `$` (it also matches before a final line break).
 
 Field rules:
@@ -101,7 +101,7 @@ Rules:
 - **At most one error per field.** Checks run in the order the field rules list them, and the first failure wins. For example, `BONUS_TARGET_PCT` with currency `eur` gives only `CURRENCY_NOT_ALLOWED`. A row can still have errors in several fields.
 - **Unknown component.** If a row's component is unknown, the checks that depend on the component (currency presence, amount range) are skipped for that row. Checks that don't depend on it (`employee_id`, date, amount format, currency format when a currency is present) still run.
 - **Header errors stop processing.** If the header has any error, no data rows are read. The batch contains only the header errors, `rows.total` is 0, and `EMPTY_FILE` is not added.
-- **`INVALID_ENCODING` stops reading.** Errors found before it are kept, and `rows.total` counts the data rows read before it.
+- **`INVALID_ENCODING` stops reading.** Errors already found for fully parsed rows are kept. `rows.total` counts the data rows that were fully parsed before decoding failed. Decoding works on buffers, so this can be fewer than the rows that physically come before the bad bytes; it is never more.
 - **Order.** By `row` ascending, with `null` first. Within row 1: header errors by the column's position in the file, then `MISSING_COLUMN` errors in canonical column order. Within a data row: the row-level error first, then field errors in canonical column order (`employee_id`, `component`, `effective_from`, `amount`, `currency`).
 - **Cap.** The response and the stored batch contain the first 100 errors in that order. `errorCount` is the full total.
 
@@ -125,14 +125,15 @@ Base path `/api/v1`. JSON uses camelCase. Dates are `"yyyy-MM-dd"`. Amounts are 
 - The value must be a UUID in the hyphenated `8-4-4-4-12` form; hex digits are case-insensitive.
 - Anything else gives `401`: a missing or empty header, braces, no hyphens, any other text, the nil UUID, or a UUID that is not a known tenant.
 - `/health` and `POST /api/v1/tenants` ignore the header completely, even when it is malformed.
+- HTTP itself strips whitespace around header values, so surrounding whitespace is not part of this contract and is not checked.
 
 | Method | Path | Tenant | Result |
 |--------|------|--------|--------|
 | GET  | `/health` | no | `200 {"status":"ok"}`. Liveness only: it doesn't touch the database |
-| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). Another content type gives `415`. Malformed JSON, or a `name` that is missing or not 1 to 200 characters after trimming, gives `400`. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
+| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). Another content type, or no `Content-Type`, gives `415`. Malformed JSON gives `400`. So does a `name` that is missing, `null` or not a string, or that is not 1 to 200 characters long after trimming (counted as .NET `string.Length`, i.e. UTF-16 code units). The name is stored and returned trimmed. Unknown JSON properties are ignored. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
 | POST | `/api/v1/ingestions` | yes | Body is CSV (content type rules below). Returns `201` with a batch (status `Applied`) and `Location: /api/v1/ingestions/{batchId}`, or `422` with a batch (status `Rejected`) and no `Location`. A body over `Ingestion:MaxBodyBytes` (default 256 MiB) gives `413` |
 | GET  | `/api/v1/ingestions/{batchId}` | yes | `200` batch. `404` if it does not exist **in this tenant**, or if `batchId` is not a UUID |
-| GET  | `/api/v1/employees/{employeeId}/compensation?asOf=yyyy-MM-dd` | yes | Values in effect on `asOf`, ordered by component code (ordinal). `asOf` is optional and defaults to today (UTC). When present, it must be a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, otherwise `400`; an empty `asOf=` is also `400`. `404` if the employee has no values in this tenant at all; `200` with empty `components` if they have values but none in effect on that date |
+| GET  | `/api/v1/employees/{employeeId}/compensation?asOf=yyyy-MM-dd` | yes | Values in effect on `asOf`, ordered by component code (ordinal). `asOf` is optional and defaults to today (UTC). When present, it must be a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, otherwise `400`. The value is not trimmed, so `asOf=%202031-01-01` is `400`, and an empty `asOf=` is also `400`. `404` if the employee has no values in this tenant at all; `200` with empty `components` if they have values but none in effect on that date |
 | GET  | `/api/v1/employees/{employeeId}/compensation/history?component=CODE` | yes | All current periods, ordered by component, then `effectiveFrom`. `component` is optional and must be an exact, case-sensitive code from 3.2; an empty or unknown value gives `400`. A known code with no values for this employee gives `200` with empty `periods`. `404` only if the employee has no values at all |
 
 **Request checks for `POST /api/v1/ingestions`**, in this order; the first one that fails decides the response:
@@ -144,7 +145,9 @@ Base path `/api/v1`. JSON uses camelCase. Dates are `"yyyy-MM-dd"`. Amounts are 
 
 A batch is recorded only for `201` and `422`. A request refused with `401`, `413` or `415` leaves no batch and changes nothing.
 
-**Order of checks on GET endpoints:** query-parameter validation (`400`) happens before the resource lookup (`404`).
+**Order of checks on GET endpoints:** tenant (`401`), then query-parameter validation (`400`), then the resource lookup (`404`).
+
+**Unknown routes** give `404` with `ProblemDetails`, whether or not `X-Tenant-Id` is present or valid. Tenant resolution only runs for the tenant endpoints in the table.
 
 Batch resource:
 
@@ -189,7 +192,7 @@ These are starting budgets. The first CI run calibrates them, and any change is 
 |--------|--------|
 | Throughput | 1,000,000-row file ingested end to end (HTTP upload until `201`) in 60 s or less on a GitHub-hosted `ubuntu-latest` runner, PostgreSQL 17 in Testcontainers with default settings. The budget is per row count; the gate's generator averages about 45 bytes per row (about 45 MB for 1M rows) |
 | Memory | The metric is the API process's peak resident set size: `VmHWM` in `/proc/<pid>/status`, which .NET reports as `Process.PeakWorkingSet64`. Each file size runs in a fresh container after the same one-row warm-up upload. Peak at 1M rows: 300 MiB or less. Peak at 1M rows minus peak at 100k rows: 64 MiB or less. The second check is the real test of streaming |
-| Logging | Console logs in JSON (`Logging:Console:FormatterName=json`). Exactly one entry per batch, with these message-template properties: `TenantId`, `BatchId`, `Status`, `TotalRows`, `InsertedRows`, `CorrectedRows`, `UnchangedRows`, `ErrorCount`, `DurationMs`. **Never** log row contents or amounts: salary data is personal data |
+| Logging | Console logs in JSON (`Logging:Console:FormatterName=json`). Exactly one entry per batch, with these message-template properties: `TenantId`, `BatchId`, `Status`, `TotalRows`, `InsertedRows`, `CorrectedRows`, `UnchangedRows`, `ErrorCount`, `DurationMs`. They appear under `State`, where the .NET JSON console formatter puts them. Types: the ids are lowercase hyphenated UUID strings, `Status` is `"Applied"` or `"Rejected"`, and the counts and `DurationMs` (whole milliseconds) are integers. **Never** log row contents or amounts: salary data is personal data |
 
 ## 4. Acceptance examples (public)
 
@@ -341,6 +344,7 @@ Runtime configuration (environment variables):
 Container contract:
 
 - The image is built from `mcr.microsoft.com/dotnet/aspnet:10.0` and listens on port 8080. The base image includes a shell and `cat`, which the load gate needs to read `/proc/1/status`. Don't switch to a chiseled or distroless image.
+- The API process must be PID 1 in the container. Use an exec-form `ENTRYPOINT ["dotnet", "CompLedger.Api.dll"]`, with no shell wrapper; the load gate reads `/proc/1/status`.
 - With `Database__MigrateOnStartup=true`, migrations finish before the app starts listening, so a `200` from `/health` means the schema is in place.
 
 ### 6.5 Known gotchas
@@ -521,3 +525,4 @@ Recorded for every run: whether the first complete attempt passed all gates, how
 |---------|------------|--------|
 | 1.0     | 2026-11-12 | First version |
 | 1.1     | 2026-11-12 | Resolved the 45 gaps found while writing the holdout scenarios (still Draft, nothing implemented). 3.3: encoding error, header-first rule, trimming, record-based row numbers, blank lines, ASCII-only patterns, stricter `employee_id`, year 0000. 3.4: `INVALID_ENCODING`; `row` and `column` per error level; one error per field and check order; unknown-component behaviour; header errors stop processing; duplicates only among rows without errors; exact ordering. 3.6: `X-Tenant-Id` format; request-check order; content-type rules; no batch for 401/413/415; `Location` only on 201; `asOf` and `component` validation; component order; tenant creation validation; ProblemDetails everywhere. 3.7: memory metric is process peak RSS in MiB, fresh container per size; JSON log fields. 6.4: roles, base image, migrations before listening. 6.5: gotchas 11–13 |
+| 1.2     | 2026-11-12 | Resolved the 10 gaps found while aligning the holdout scenarios with 1.1 (still Draft). 3.3: header names use the value trimming set; a lone `""` record is a blank line. 3.4: `rows.total` after `INVALID_ENCODING` counts fully parsed rows only. 3.6: header whitespace is not part of the contract; tenant creation details (trimmed name, length unit, null or non-string name, missing content type); `asOf` is not trimmed; GET check order 401 → 400 → 404; unknown routes are 404 without a tenant check. 3.7: where the log properties appear and their types. 6.4: the API runs as PID 1 |
