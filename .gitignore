@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+artifacts/
+TestResults/
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# Local configuration and secrets: never commit
+.env
+*.env
+appsettings.*.local.json
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
