@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Draft |
-| Version    | 1.2 |
+| Version    | 1.3 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |
 | Depends on | none (first feature; includes the solution skeleton) |
@@ -130,7 +130,7 @@ Base path `/api/v1`. JSON uses camelCase. Dates are `"yyyy-MM-dd"`. Amounts are 
 | Method | Path | Tenant | Result |
 |--------|------|--------|--------|
 | GET  | `/health` | no | `200 {"status":"ok"}`. Liveness only: it doesn't touch the database |
-| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). Another content type, or no `Content-Type`, gives `415`. Malformed JSON gives `400`. So does a `name` that is missing, `null` or not a string, or that is not 1 to 200 characters long after trimming (counted as .NET `string.Length`, i.e. UTF-16 code units). The name is stored and returned trimmed. Unknown JSON properties are ignored. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
+| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). The content type follows the same rules as ingestion (below), with media type `application/json`: compared case-insensitively, parameters allowed, any `charset` other than `utf-8` gives `415`. Another media type, or no `Content-Type`, gives `415`. Malformed JSON gives `400`. So does a `name` that is missing, `null` or not a string, or that is not 1 to 200 characters long after trimming (counted as .NET `string.Length`, i.e. UTF-16 code units). Trimming uses the CSV set (space, tab, CR, LF) and nothing else, so a no-break space is kept. The name is stored and returned trimmed. Unknown JSON properties are ignored. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
 | POST | `/api/v1/ingestions` | yes | Body is CSV (content type rules below). Returns `201` with a batch (status `Applied`) and `Location: /api/v1/ingestions/{batchId}`, or `422` with a batch (status `Rejected`) and no `Location`. A body over `Ingestion:MaxBodyBytes` (default 256 MiB) gives `413` |
 | GET  | `/api/v1/ingestions/{batchId}` | yes | `200` batch. `404` if it does not exist **in this tenant**, or if `batchId` is not a UUID |
 | GET  | `/api/v1/employees/{employeeId}/compensation?asOf=yyyy-MM-dd` | yes | Values in effect on `asOf`, ordered by component code (ordinal). `asOf` is optional and defaults to today (UTC). When present, it must be a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, otherwise `400`. The value is not trimmed, so `asOf=%202031-01-01` is `400`, and an empty `asOf=` is also `400`. `404` if the employee has no values in this tenant at all; `200` with empty `components` if they have values but none in effect on that date |
@@ -148,6 +148,8 @@ A batch is recorded only for `201` and `422`. A request refused with `401`, `413
 **Order of checks on GET endpoints:** tenant (`401`), then query-parameter validation (`400`), then the resource lookup (`404`).
 
 **Unknown routes** give `404` with `ProblemDetails`, whether or not `X-Tenant-Id` is present or valid. Tenant resolution only runs for the tenant endpoints in the table.
+
+**Known path, wrong method** (for example `DELETE /api/v1/tenants` or `GET /api/v1/ingestions`) gives `405` with `ProblemDetails` and an `Allow` header, also without a tenant check. When the tenant admin API is disabled, its path is unknown, so any method on it gives `404`.
 
 Batch resource:
 
@@ -526,3 +528,4 @@ Recorded for every run: whether the first complete attempt passed all gates, how
 | 1.0     | 2026-11-12 | First version |
 | 1.1     | 2026-11-12 | Resolved the 45 gaps found while writing the holdout scenarios (still Draft, nothing implemented). 3.3: encoding error, header-first rule, trimming, record-based row numbers, blank lines, ASCII-only patterns, stricter `employee_id`, year 0000. 3.4: `INVALID_ENCODING`; `row` and `column` per error level; one error per field and check order; unknown-component behaviour; header errors stop processing; duplicates only among rows without errors; exact ordering. 3.6: `X-Tenant-Id` format; request-check order; content-type rules; no batch for 401/413/415; `Location` only on 201; `asOf` and `component` validation; component order; tenant creation validation; ProblemDetails everywhere. 3.7: memory metric is process peak RSS in MiB, fresh container per size; JSON log fields. 6.4: roles, base image, migrations before listening. 6.5: gotchas 11–13 |
 | 1.2     | 2026-11-12 | Resolved the 10 gaps found while aligning the holdout scenarios with 1.1 (still Draft). 3.3: header names use the value trimming set; a lone `""` record is a blank line. 3.4: `rows.total` after `INVALID_ENCODING` counts fully parsed rows only. 3.6: header whitespace is not part of the contract; tenant creation details (trimmed name, length unit, null or non-string name, missing content type); `asOf` is not trimmed; GET check order 401 → 400 → 404; unknown routes are 404 without a tenant check. 3.7: where the log properties appear and their types. 6.4: the API runs as PID 1 |
+| 1.3     | 2026-11-12 | Resolved the 3 gaps found while aligning the holdout scenarios with 1.2 (still Draft). 3.6: a known path with the wrong method gives 405 with ProblemDetails and `Allow`, without a tenant check; tenant names are trimmed with the CSV whitespace set only; `POST /tenants` content type follows the ingestion rules with `application/json` |
