@@ -83,11 +83,12 @@ jobs:
           COMP_LEDGER_IMAGE: comp-ledger:ci
         run: |
           set +e
-          dotnet test --project scenarios/prp-001 > "$RUNNER_TEMP/scenarios.log" 2>&1
+          dotnet test --project scenarios/prp-001 --no-ansi --no-progress > "$RUNNER_TEMP/scenarios.log" 2>&1
           code=$?
-          set -e
-          grep -E "^\s*(total|failed|succeeded|skipped):" "$RUNNER_TEMP/scenarios.log" | tee "$RUNNER_TEMP/scenarios.summary"
-          grep -E "^\s*failed CompLedgerHoldout\." "$RUNNER_TEMP/scenarios.log" | sed -E 's/^\s*failed //; s/ \([0-9.]+m?s\)$//' | tee "$RUNNER_TEMP/scenarios.failed" || true
+          # Filtering the output must never decide the result; the test exit code does.
+          grep -E "^\s*(total|failed|succeeded|skipped):" "$RUNNER_TEMP/scenarios.log" > "$RUNNER_TEMP/scenarios.summary"
+          grep -E "^\s*failed CompLedgerHoldout\." "$RUNNER_TEMP/scenarios.log" | sed -E 's/^\s*failed //; s/ \([0-9.]+m?s\)$//' > "$RUNNER_TEMP/scenarios.failed"
+          cat "$RUNNER_TEMP/scenarios.summary" "$RUNNER_TEMP/scenarios.failed"
           exit $code
 
       - name: Load gate
@@ -98,11 +99,11 @@ jobs:
           COMP_LEDGER_IMAGE: comp-ledger:ci
         run: |
           set +e
-          dotnet test --project load --output Detailed > "$RUNNER_TEMP/load.log" 2>&1
+          dotnet test --project load --output Detailed --no-ansi --no-progress > "$RUNNER_TEMP/load.log" 2>&1
           code=$?
-          set -e
-          grep -E "^\s*(Small|Large):" "$RUNNER_TEMP/load.log" | sort -u | tee "$RUNNER_TEMP/load.summary"
-          grep -E "^\s*(passed|failed) CompLedgerHoldout\." "$RUNNER_TEMP/load.log" | sed -E 's/ \([0-9.]+m?s\)$//' | tee -a "$RUNNER_TEMP/load.summary"
+          grep -E "^\s*(Small|Large):" "$RUNNER_TEMP/load.log" | sort -u > "$RUNNER_TEMP/load.summary"
+          grep -E "^\s*(passed|failed) CompLedgerHoldout\.|^\s*(total|failed|succeeded):" "$RUNNER_TEMP/load.log" | sed -E 's/ \([0-9.]+m?s\)$//' >> "$RUNNER_TEMP/load.summary"
+          cat "$RUNNER_TEMP/load.summary"
           exit $code
 
       - name: Summary
