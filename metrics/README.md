@@ -31,6 +31,7 @@ These are fixed before the first run so the numbers can't be shaped after the fa
 - **Merged without human edits.** A merged PR where every commit carries an `Agent-Run:` trailer. A human commit (fix, rebase conflict resolution, test change) makes the PR count as edited. Squash merges are not used, so the commits stay visible.
 - **Cost per feature.** The sum of `agent.costUsd` over every run of the PRP (all attempts, the review included). This is the API-price equivalent that Claude Code computes from token usage. On a subscription plan it is not the money actually paid, and the README says so.
 - **Wall time per feature.** The sum of run durations. Human review time is not included and is reported separately if measured.
+  - Clarified after run `prp002-20261113T220528Z-69ed45b3`: a run's duration is `finishedAt - startedAt`, which `run-prp.cs` takes right around the agent process. Claude Code's `durationMs` and `numTurns` can cover only the last part of a session that waited for background work: that run reported 1.5 min and 6 turns for a process that ran 27.9 min. For the earlier runs the two durations agree within 0.1 min. `tools/metrics-report.cs` marks such turn counts.
 - **Defect leakage.** Defects found after merge (by a later PRP's holdout scenarios, by load gates or by hand) per merged PRP. Each defect is linked to the PRP whose rule it breaks.
 
 ## What is not claimed

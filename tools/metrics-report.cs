@@ -34,19 +34,32 @@ Console.WriteLine("### Agent runs");
 Console.WriteLine();
 Console.WriteLine("| run | PRP | attempt | started (UTC) | turns | minutes | cost, USD | commits | gates |");
 Console.WriteLine("|---|---|---|---|---|---|---|---|---|");
+var partialTurns = false;
 foreach (var r in runs)
 {
     var agent = r["agent"];
     var gates = r["gates"] as JsonObject;
     var gateText = gates is null ? "" : string.Join(" ", gates.Select(p => $"{p.Key}:{p.Value}"));
-    var started = DateTime.TryParse(Str(r["startedAt"]), inv, DateTimeStyles.AdjustToUniversal, out var s) ? s.ToString("yyyy-MM-dd HH:mm", inv) : "";
+    var hasStart = DateTime.TryParse(Str(r["startedAt"]), inv, DateTimeStyles.AdjustToUniversal, out var s);
+    var hasEnd = DateTime.TryParse(Str(r["finishedAt"]), inv, DateTimeStyles.AdjustToUniversal, out var f);
+    var started = hasStart ? s.ToString("yyyy-MM-dd HH:mm", inv) : "";
+    // Minutes: wall clock of the agent process, measured by run-prp.cs around it. Claude Code's own
+    // duration_ms and num_turns cover only the last segment of a session that waited for background
+    // work, so they can be far too low; such turns are marked.
+    var wallMs = hasStart && hasEnd ? (f - s).TotalMilliseconds : Num(agent?["durationMs"]);
+    var turns = Str(agent?["numTurns"]);
+    if (Num(agent?["durationMs"]) < 0.8 * wallMs)
+    {
+        turns += "*";
+        partialTurns = true;
+    }
     Console.WriteLine(string.Join(" | ", [
         $"| `{Str(r["runId"])}`",
         $"{Str(r["prp"])} v{Str(r["prpVersion"])}",
         Str(r["attempt"]),
         started,
-        Str(agent?["numTurns"]),
-        (Num(agent?["durationMs"]) / 60000).ToString("0.0", inv),
+        turns,
+        (wallMs / 60000).ToString("0.0", inv),
         Num(agent?["costUsd"]).ToString("0.00", inv),
         Str(r["commits"]),
         $"{gateText} |",
@@ -56,6 +69,11 @@ foreach (var r in runs)
 var passed = runs.Count(r => AllPass(r["gates"]));
 var cost = runs.Sum(r => Num(r["agent"]?["costUsd"]));
 Console.WriteLine();
+if (partialTurns)
+{
+    Console.WriteLine("\\* Undercounted: Claude Code reported a duration far shorter than the agent process ran, so its num_turns covers only part of the session (most likely the part after the agent waited for background work). Minutes are wall clock; cost covers the whole session.");
+    Console.WriteLine();
+}
 Console.WriteLine($"{runs.Count} runs, {passed} with all gates passing. Total estimated cost: ${cost.ToString("0.00", inv)} at API list prices.");
 Console.WriteLine("Holdout scenarios and the load gate run in the `holdout` job, outside the agent's view.");
 return 0;
