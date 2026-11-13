@@ -2,7 +2,7 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Ready |
+| Status     | Implemented |
 | Version    | 1.4 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |

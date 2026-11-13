@@ -8,7 +8,7 @@ The PRP, not the code, is the source of truth. If code and PRP disagree, the cod
 
 | PRP | Title | Status | Version |
 |-----|-------|--------|---------|
-| [001](001-tenant-ingestion-effective-dating.prp.md) | Multi-tenant compensation ingestion with effective dating | Ready | 1.4 |
+| [001](001-tenant-ingestion-effective-dating.prp.md) | Multi-tenant compensation ingestion with effective dating | Implemented | 1.4 |
 
 ## Who does what
 
