@@ -480,7 +480,7 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.JsonAsync();
         Assert.Contains(body.GetProperty("asOf").GetString(), new[] { before.ToString("yyyy-MM-dd"), after.ToString("yyyy-MM-dd") });
-        Assert.Equal(["employeeId", "asOf", "components"], body.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(["employeeId", "asOf", "knownAt", "components"], body.EnumerateObject().Select(p => p.Name));
     }
 
     [Fact]
@@ -600,7 +600,7 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.JsonAsync();
-        Assert.Equal(["employeeId", "periods"], body.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(["employeeId", "knownAt", "periods"], body.EnumerateObject().Select(p => p.Name));
         Assert.Equal("E-1001", body.GetProperty("employeeId").GetString());
         Assert.Equal(
             [
