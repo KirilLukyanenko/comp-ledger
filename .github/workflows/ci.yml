@@ -26,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
       - name: Gates (tools/verify.sh)
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: app
 
@@ -62,14 +62,14 @@ jobs:
         run: docker build -t comp-ledger:ci app
 
       - name: Check out the holdout scenarios (read-only deploy key)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/comp-ledger-scenarios
           ssh-key: ${{ secrets.SCENARIOS_DEPLOY_KEY }}
           persist-credentials: false
           path: holdout
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
 
@@ -143,12 +143,12 @@ jobs:
           if [ -n "$KEY" ]; then echo "present=true" >> "$GITHUB_OUTPUT"
           else echo "::notice::ANTHROPIC_API_KEY is not set, so the AI review is skipped."; fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.key.outputs.present == 'true'
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.key.outputs.present == 'true'
         with:
           node-version: "22"
@@ -192,8 +192,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
       - name: Agent runs
