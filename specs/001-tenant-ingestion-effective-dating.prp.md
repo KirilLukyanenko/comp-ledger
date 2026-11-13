@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Ready |
-| Version    | 1.3 |
+| Version    | 1.4 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |
 | Depends on | none (first feature; includes the solution skeleton) |
@@ -47,9 +47,9 @@ Tenant-configurable components are out of scope (see section 5).
 
 ### 3.3 CSV format
 
-- **Encoding.** UTF-8, BOM allowed. Bytes that are not valid UTF-8 are a file-level `INVALID_ENCODING` error, and reading stops there.
+- **Encoding.** UTF-8 only. One UTF-8 BOM (`EF BB BF`) at the very start is skipped. No other encoding is detected: a UTF-16 or UTF-32 BOM is not recognised, and because it contains bytes that are never valid UTF-8, such a file gets `INVALID_ENCODING`. Bytes that are not valid UTF-8 are a file-level `INVALID_ENCODING` error, and reading stops there.
 - **Syntax.** Comma delimiter, RFC 4180 quoting. A quoted field may contain commas, doubled quotes and line breaks.
-- **Header.** The first record is always the header; there is no headerless mode. A file that starts with data gets header errors.
+- **Header.** The first record is always the header; there is no headerless mode. A file that starts with data gets header errors. Leading blank lines are not skipped: if the first record is blank (3.3 Blank lines) and anything other than blank lines follows, row 1 gets `MALFORMED_CSV`. A first record that cannot be parsed (for example a stray quote) also gets `MALFORMED_CSV` at row 1. In both cases it is a header error (3.4), so no data rows are read.
 - **Columns.** Required, in any order: `employee_id, component, effective_from, amount, currency`. Header names are trimmed with the same whitespace set as values (see Trimming) and matched case-insensitively. Any other column is an error. Errors always name columns by their canonical lowercase name, except `UNKNOWN_COLUMN` (see 3.4).
 - **Trimming.** After unquoting, leading and trailing whitespace (space, tab, CR, LF) is removed from every value, quoted or not. An empty `currency` means "no currency".
 - **Row numbers** count records, not physical lines. The header is row 1 and the first data record is row 2 (what a user sees in a spreadsheet). A record whose quoted field spans several lines is one row.
@@ -75,7 +75,7 @@ Field rules:
 | `MISSING_COLUMN`        | header | A required column is absent. One error per missing column |
 | `UNKNOWN_COLUMN`        | header | A column not in the list. One error per occurrence, so `grade,grade` gives two |
 | `DUPLICATE_COLUMN`      | header | A required column appears more than once. One error per extra occurrence |
-| `MALFORMED_CSV`         | row    | The row cannot be parsed, has the wrong number of fields, or is a blank line (3.3). Such a row gets no other errors |
+| `MALFORMED_CSV`         | row, or header at row 1 | The row cannot be parsed, has the wrong number of fields, or is a blank line (3.3). Such a row gets no other errors. At row 1 (a blank or unparseable header, 3.3 Header) it is a header error and the only error of the batch |
 | `INVALID_EMPLOYEE_ID`   | field  | Breaks the `employee_id` rule |
 | `UNKNOWN_COMPONENT`     | field  | Not in the catalogue |
 | `INVALID_DATE`          | field  | Not `yyyy-MM-dd` or not a real date |
@@ -92,7 +92,7 @@ Error object: `{ "row": 4, "column": "amount", "code": "INVALID_AMOUNT", "messag
 | Error level | `row` | `column` |
 |-------------|-------|----------|
 | file (`EMPTY_FILE`, `INVALID_ENCODING`) | `null` | `null` |
-| header | `1` | `MISSING_COLUMN`, `DUPLICATE_COLUMN`: the canonical name. `UNKNOWN_COLUMN`: the name as written in the file, trimmed |
+| header | `1` | `MISSING_COLUMN`, `DUPLICATE_COLUMN`: the canonical name. `UNKNOWN_COLUMN`: the name as written in the file, trimmed. `MALFORMED_CSV`: `null` |
 | row (`MALFORMED_CSV`, `DUPLICATE_KEY_IN_FILE`) | the row number | `null` |
 | field | the row number | the canonical name |
 
@@ -130,7 +130,7 @@ Base path `/api/v1`. JSON uses camelCase. Dates are `"yyyy-MM-dd"`. Amounts are 
 | Method | Path | Tenant | Result |
 |--------|------|--------|--------|
 | GET  | `/health` | no | `200 {"status":"ok"}`. Liveness only: it doesn't touch the database |
-| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). The content type follows the same rules as ingestion (below), with media type `application/json`: compared case-insensitively, parameters allowed, any `charset` other than `utf-8` gives `415`. Another media type, or no `Content-Type`, gives `415`. Malformed JSON gives `400`. So does a `name` that is missing, `null` or not a string, or that is not 1 to 200 characters long after trimming (counted as .NET `string.Length`, i.e. UTF-16 code units). Trimming uses the CSV set (space, tab, CR, LF) and nothing else, so a no-break space is kept. The name is stored and returned trimmed. Unknown JSON properties are ignored. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
+| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). The content type follows the same rules as ingestion (below), with media type `application/json`: compared case-insensitively, parameters allowed, any `charset` other than `utf-8` gives `415`. Another media type, or no `Content-Type`, gives `415`. Malformed JSON gives `400`. Property names are matched case-insensitively, as ASP.NET Core does by default, so `{"Name":"Acme"}` is accepted; a body with more than one property matching `name` is not part of the contract. A `name` that is missing, `null` or not a string, or that is not 1 to 200 characters long after trimming (counted as .NET `string.Length`, i.e. UTF-16 code units). Trimming uses the CSV set (space, tab, CR, LF) and nothing else, so a no-break space is kept. The name is stored and returned trimmed. Unknown JSON properties are ignored. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
 | POST | `/api/v1/ingestions` | yes | Body is CSV (content type rules below). Returns `201` with a batch (status `Applied`) and `Location: /api/v1/ingestions/{batchId}`, or `422` with a batch (status `Rejected`) and no `Location`. A body over `Ingestion:MaxBodyBytes` (default 256 MiB) gives `413` |
 | GET  | `/api/v1/ingestions/{batchId}` | yes | `200` batch. `404` if it does not exist **in this tenant**, or if `batchId` is not a UUID |
 | GET  | `/api/v1/employees/{employeeId}/compensation?asOf=yyyy-MM-dd` | yes | Values in effect on `asOf`, ordered by component code (ordinal). `asOf` is optional and defaults to today (UTC). When present, it must be a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, otherwise `400`. The value is not trimmed, so `asOf=%202031-01-01` is `400`, and an empty `asOf=` is also `400`. `404` if the employee has no values in this tenant at all; `200` with empty `components` if they have values but none in effect on that date |
@@ -146,6 +146,8 @@ Base path `/api/v1`. JSON uses camelCase. Dates are `"yyyy-MM-dd"`. Amounts are 
 A batch is recorded only for `201` and `422`. A request refused with `401`, `413` or `415` leaves no batch and changes nothing.
 
 **Order of checks on GET endpoints:** tenant (`401`), then query-parameter validation (`400`), then the resource lookup (`404`).
+
+**Repeated query parameters.** `asOf` or `component` given more than once (for example `?asOf=2026-01-01&asOf=2026-01-01`) gives `400`, even when the values are equal. Other query parameters are ignored.
 
 **Unknown routes** give `404` with `ProblemDetails`, whether or not `X-Tenant-Id` is present or valid. Tenant resolution only runs for the tenant endpoints in the table.
 
@@ -282,10 +284,14 @@ A file without a `currency` column returns `422` with `MISSING_COLUMN` on row 1,
 ```
 comp-ledger/
 ├── CLAUDE.md
-├── README.md
-├── .claude/            # skills and sub-agents (do not edit)
+├── .claude/            # skills, sub-agents, permissions (do not edit)
+├── .githooks/          # pre-commit secret scan
 ├── .github/workflows/  # CI (do not edit)
-└── specs/              # PRPs (do not edit)
+├── metrics/            # run records written by tools/run-prp.cs (do not edit)
+├── specs/              # PRPs (do not edit)
+└── tools/
+    ├── verify.sh       # the gates from section 8, used by /verify and by CI
+    └── run-prp.cs      # starts agent runs; not part of the product
 ```
 
 ### 6.3 Target tree after this PRP
@@ -361,9 +367,12 @@ Container contract:
 8. **Parse with invariant culture.** Check the amount against the regex first, then `decimal.Parse(..., CultureInfo.InvariantCulture)`. Parse dates with `DateOnly.TryParseExact("yyyy-MM-dd", InvariantCulture)`.
 9. **Take the advisory lock after staging, not before.** Otherwise one slow upload blocks every other upload of that tenant while bytes are still arriving.
 10. **Compare numerically, not as strings.** `numeric` equality makes `50000 = 50000.0000` true. Compare currency with `IS DISTINCT FROM` because it can be `NULL`.
-11. **A default `StreamReader` hides bad bytes.** It replaces invalid UTF-8 with U+FFFD and carries on. Use `new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)` and turn the `DecoderFallbackException` into `INVALID_ENCODING`.
+11. **A default `StreamReader` hides bad bytes and guesses encodings.** It replaces invalid UTF-8 with U+FFFD and carries on, and by default it switches to UTF-16 or UTF-32 when it sees their BOM. Use `new StreamReader(body, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true), detectEncodingFromByteOrderMarks: false)`: `throwOnInvalidBytes` makes bad bytes throw, `detectEncodingFromByteOrderMarks: false` stops the switch, and `encoderShouldEmitUTF8Identifier: true` gives the encoding a preamble, which is what makes the reader skip a UTF-8 BOM. Turn the `DecoderFallbackException` into `INVALID_ENCODING`.
 12. **.NET regex traps.** `\d` matches any Unicode digit (Arabic-Indic, fullwidth), and `decimal.Parse` then fails with a 500. `$` also matches before a final `\n`. Use `[0-9]` with `\A`…`\z`.
 13. **Kestrel's own 404 and 413 have no body.** Use `AddProblemDetails()` with `UseStatusCodePages()` so unknown routes and size-limit errors also return `ProblemDetails`.
+14. **NuGet audit plus `-warnaserror` fails the build on vulnerable transitive packages.** Testcontainers depends on `SSH.NET`, and an old resolved version raises `NU1903`. Fix it by pinning a patched version centrally (`CentralPackageTransitivePinningEnabled` in `Directory.Packages.props`, or a newer Testcontainers). Never silence it with `NoWarn`, `NuGetAudit=false` or a lower audit level.
+15. **Parameter binding does not reject repeated query parameters.** Read `HttpRequest.Query["asOf"]` and `HttpRequest.Query["component"]` and check `Count` before parsing (3.6 Repeated query parameters).
+16. **`now()` is the transaction start time**, not the time of the call. The ingestion transaction starts before the advisory lock is taken, so `now()` can be earlier than the time a concurrent batch of the same tenant committed. Use `clock_timestamp()` once, after the lock (7.2).
 
 ## 7. Implementation blueprint
 
@@ -413,6 +422,8 @@ CREATE UNIQUE INDEX ux_compensation_current
 Row-level security: enable and force it on `ingestion_batches` and `compensation_values`, with a policy `USING` and `WITH CHECK` of `tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid`.
 `tenants` has no policy: the app role gets `SELECT, INSERT` on it only.
 
+Timestamps of applied values: all rows inserted by one batch get the same `recorded_at`, and all rows it supersedes get the same value as `superseded_at`. That value is the batch's apply time (7.2). So within a tenant, apply times follow the order in which batches were applied, and every superseded row has `superseded_at >= recorded_at`.
+
 ### 7.2 Ingestion pipeline
 
 ```
@@ -442,10 +453,11 @@ POST /api/v1/ingestions
       return 422 + batch
 
   SELECT pg_advisory_xact_lock(hashtextextended(tenant::text, 0))
+  appliedAt <- SELECT clock_timestamp()             // once, after the lock; never now() (6.5 #16)
   insert the batch row (Applied, counts 0)
 
   -- corrected: supersede current rows whose value differs
-  UPDATE compensation_values c SET superseded_at = now(), superseded_by_batch_id = @batch
+  UPDATE compensation_values c SET superseded_at = @appliedAt, superseded_by_batch_id = @batch
   FROM staging s
   WHERE c.tenant_id = @tenant AND c.superseded_at IS NULL
     AND (c.employee_id, c.component, c.effective_from) = (s.employee_id, s.component, s.effective_from)
@@ -453,7 +465,7 @@ POST /api/v1/ingestions
   corrected <- affected rows
 
   -- insert every staged row that now has no current value (new and corrected)
-  INSERT INTO compensation_values (...) SELECT ... FROM staging s
+  INSERT INTO compensation_values (..., recorded_at) SELECT ..., @appliedAt FROM staging s
   WHERE NOT EXISTS (current row with the same key)
   written <- affected rows
   inserted <- written - corrected;  unchanged <- total - written
@@ -472,7 +484,7 @@ As-of query: `DISTINCT ON (component)` over current rows with `effective_from <=
 | T1 | Solution skeleton: `.slnx`, `Directory.Build.props`, `Directory.Packages.props`, three `src` projects, two test projects, `/health` | Level 1 is green |
 | T2 | Migrations 0001 to 0004, DbUp migrator, integration fixture (Postgres container, role provisioning with a random password, migrations as owner, app connects as the app login) | Integration tests prove: with no tenant set, 0 rows are visible; tenant A cannot read or insert B's rows; the app login is not a superuser |
 | T3 | `Components`, `RowParser`, `ErrorCollector` in Core | Unit tests cover every error code in 3.4 and every boundary in 3.3 (min and max dates, 4 vs 5 decimals, 15 vs 16 integer digits, percent at 500 vs 500.0001) |
-| T4 | `PostgresIngestor`: staging, `COPY`, duplicate detection, merge, batch records | Integration tests cover inserted, unchanged, corrected and rejected, the superseded row kept in A4, and two concurrent batches for one tenant giving the same result as sequential ones |
+| T4 | `PostgresIngestor`: staging, `COPY`, duplicate detection, merge, batch records | Integration tests cover inserted, unchanged, corrected and rejected, the superseded row kept in A4, and two concurrent batches for one tenant giving the same result as sequential ones, with `superseded_at >= recorded_at` on every superseded row (7.1) |
 | T5 | Endpoints, tenant middleware, queries, ProblemDetails | Integration tests through `WebApplicationFactory` reproduce A1 to A10 |
 | T6 | `Dockerfile` and the runtime configuration from 6.4 | `docker build` succeeds; the container starts against a Testcontainers database and `/health` returns 200 |
 
@@ -529,3 +541,4 @@ Recorded for every run: whether the first complete attempt passed all gates, how
 | 1.1     | 2026-11-12 | Resolved the 45 gaps found while writing the holdout scenarios (still Draft, nothing implemented). 3.3: encoding error, header-first rule, trimming, record-based row numbers, blank lines, ASCII-only patterns, stricter `employee_id`, year 0000. 3.4: `INVALID_ENCODING`; `row` and `column` per error level; one error per field and check order; unknown-component behaviour; header errors stop processing; duplicates only among rows without errors; exact ordering. 3.6: `X-Tenant-Id` format; request-check order; content-type rules; no batch for 401/413/415; `Location` only on 201; `asOf` and `component` validation; component order; tenant creation validation; ProblemDetails everywhere. 3.7: memory metric is process peak RSS in MiB, fresh container per size; JSON log fields. 6.4: roles, base image, migrations before listening. 6.5: gotchas 11–13 |
 | 1.2     | 2026-11-12 | Resolved the 10 gaps found while aligning the holdout scenarios with 1.1 (still Draft). 3.3: header names use the value trimming set; a lone `""` record is a blank line. 3.4: `rows.total` after `INVALID_ENCODING` counts fully parsed rows only. 3.6: header whitespace is not part of the contract; tenant creation details (trimmed name, length unit, null or non-string name, missing content type); `asOf` is not trimmed; GET check order 401 → 400 → 404; unknown routes are 404 without a tenant check. 3.7: where the log properties appear and their types. 6.4: the API runs as PID 1 |
 | 1.3     | 2026-11-12 | Resolved the 3 gaps found while aligning the holdout scenarios with 1.2 (still Draft). 3.6: a known path with the wrong method gives 405 with ProblemDetails and `Allow`, without a tenant check; tenant names are trimmed with the CSV whitespace set only; `POST /tenants` content type follows the ingestion rules with `application/json` |
+| 1.4     | 2026-11-13 | Resolved the 7 gaps the implementer agent reported in its first run (run `prp001-20261113T105317Z-5f082a87`, stopped at T1 by a harness misconfiguration before any code was built). 3.3: only a UTF-8 BOM is recognised, any other BOM gives `INVALID_ENCODING`; a blank or unparseable first record is `MALFORMED_CSV` at row 1, a header error. 3.4: `MALFORMED_CSV` can be a header error, with `column` `null`. 3.6: `POST /tenants` property names are case-insensitive; repeated `asOf` or `component` gives 400. 6.2: the tree matches the repository. 6.5: gotcha 11 rewritten for BOM handling; new gotchas 14 (NuGet audit, seen when the gates built that run's skeleton), 15 (repeated query parameters), 16 (`now()`). 7.1, 7.2: one apply time per batch from `clock_timestamp()` after the lock, used for `recorded_at` and `superseded_at`. 7.3: T4 checks `superseded_at >= recorded_at` |

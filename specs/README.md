@@ -8,7 +8,7 @@ The PRP, not the code, is the source of truth. If code and PRP disagree, the cod
 
 | PRP | Title | Status | Version |
 |-----|-------|--------|---------|
-| [001](001-tenant-ingestion-effective-dating.prp.md) | Multi-tenant compensation ingestion with effective dating | Ready | 1.3 |
+| [001](001-tenant-ingestion-effective-dating.prp.md) | Multi-tenant compensation ingestion with effective dating | Ready | 1.4 |
 
 ## Who does what
 
@@ -36,6 +36,7 @@ The PRP, not the code, is the source of truth. If code and PRP disagree, the cod
 - Each PRP has a `Version` field and a `Changelog` table at the end.
 - Wording fixes that don't change behaviour: bump the minor version (1.0 → 1.1).
 - Any change to behaviour, API contract, budgets or technical decisions: bump the major version (1.x → 2.0). Holdout scenarios must be updated **before** the change is implemented.
+- Exception: until the first implementation is merged, closing gaps (deciding cases the PRP left open) bumps the minor version. Nothing is built on the old behaviour yet, so there is nothing to break.
 - A budget calibrated from a real measurement gets a changelog line with the measured numbers and the CI run that produced them.
 
 ## Writing a PRP
