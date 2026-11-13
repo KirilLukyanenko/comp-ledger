@@ -294,6 +294,96 @@ public sealed class PostgresIngestorTests(PostgresFixture fixture)
         Assert.Equal(batch.Errors, stored.Errors);
     }
 
+    // ---------- references without foreign keys (PRP-001 2.0) ----------
+
+    [Fact]
+    public async Task Compensation_values_has_no_foreign_keys_and_the_other_tables_keep_theirs()
+    {
+        await using var connection = await fixture.AppDataSource.OpenConnectionAsync(Ct);
+
+        var foreignKeys = (await connection.QueryAsync<(string Table, string Name)>(
+            """
+            SELECT conrelid::regclass::text, conname::text
+            FROM pg_constraint
+            WHERE contype = 'f' AND conrelid IN ('tenants'::regclass, 'ingestion_batches'::regclass, 'compensation_values'::regclass)
+            ORDER BY 1, 2
+            """)).ToList();
+
+        Assert.DoesNotContain(foreignKeys, k => k.Table == "compensation_values");
+        Assert.Equal([("ingestion_batches", "ingestion_batches_tenant_id_fkey")], foreignKeys);
+    }
+
+    [Fact]
+    public async Task After_applied_corrected_and_rejected_batches_every_value_points_to_its_tenant_and_an_applied_batch_of_it()
+    {
+        var tenant = await fixture.CreateTenantAsync("A");
+        var otherTenant = await fixture.CreateTenantAsync("B");
+
+        var first = await IngestAsync(tenant, A1);
+        var rejected = await IngestAsync(tenant, Header + "E-1001,BASE_SALARY,2026-01-01,x,EUR\nE-7,ALLOWANCE,2026-01-01,1,EUR\n");
+        var correcting = await IngestAsync(
+            tenant,
+            Header
+            + "E-1001,BASE_SALARY,2026-01-01,51000,EUR\n" // corrected
+            + "E-1001,BASE_SALARY,2026-07-01,55000,EUR\n" // unchanged
+            + "E-1002,ALLOWANCE,2026-01-01,1200,EUR\n"); // inserted
+        var correctingAgain = await IngestAsync(tenant, Header + "E-1001,BASE_SALARY,2026-01-01,52000,EUR\n");
+        var other = await IngestAsync(otherTenant, A1);
+        var otherCorrecting = await IngestAsync(otherTenant, Header + "E-1001,BONUS_TARGET_PCT,2026-01-01,12,\n");
+
+        Assert.Equal(BatchStatus.Rejected, rejected.Status);
+        Assert.Equal(new BatchRows(3, 1, 1, 1), correcting.Rows);
+        Assert.Equal(new BatchRows(1, 0, 1, 0), correctingAgain.Rows);
+        Assert.Equal(new BatchRows(1, 0, 1, 0), otherCorrecting.Rows);
+
+        foreach (var (id, values, superseded, batches) in new[]
+        {
+            (tenant, 6, 2, new[] { first.BatchId, correcting.BatchId, correctingAgain.BatchId }),
+            (otherTenant, 4, 1, new[] { other.BatchId, otherCorrecting.BatchId }),
+        })
+        {
+            await using var scope = await TenantScope.BeginAsync(fixture.AppDataSource, id, Ct);
+
+            // What the dropped foreign keys used to guarantee, and more: the batch is Applied and of the same tenant.
+            var counts = await scope.Connection.QuerySingleAsync<(long Total, long Superseded, long BadTenant, long BadBatch, long BadSupersededBy)>(
+                """
+                SELECT count(*),
+                       count(*) FILTER (WHERE v.superseded_by_batch_id IS NOT NULL),
+                       count(*) FILTER (WHERE v.tenant_id <> @Tenant
+                                           OR NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = v.tenant_id)),
+                       count(*) FILTER (WHERE NOT EXISTS (
+                           SELECT 1 FROM ingestion_batches b
+                           WHERE b.id = v.batch_id AND b.tenant_id = v.tenant_id AND b.status = 'Applied')),
+                       count(*) FILTER (WHERE (v.superseded_by_batch_id IS NULL) <> (v.superseded_at IS NULL)
+                                           OR (v.superseded_by_batch_id IS NOT NULL AND NOT EXISTS (
+                           SELECT 1 FROM ingestion_batches b
+                           WHERE b.id = v.superseded_by_batch_id AND b.tenant_id = v.tenant_id AND b.status = 'Applied')))
+                FROM compensation_values v
+                """,
+                new { Tenant = id },
+                scope.Transaction);
+
+            Assert.Equal(values, counts.Total);
+            Assert.Equal(superseded, counts.Superseded);
+            Assert.Equal(0, counts.BadTenant);
+            Assert.Equal(0, counts.BadBatch);
+            Assert.Equal(0, counts.BadSupersededBy);
+
+            // The batches referenced are exactly the applied ones of this tenant that wrote something.
+            var referenced = (await scope.Connection.QueryAsync<Guid>(
+                """
+                SELECT batch_id FROM compensation_values
+                UNION
+                SELECT superseded_by_batch_id FROM compensation_values WHERE superseded_by_batch_id IS NOT NULL
+                """,
+                transaction: scope.Transaction)).ToHashSet();
+            Assert.Equal(batches.ToHashSet(), referenced);
+        }
+
+        // The rejected batch is recorded, and no value refers to it.
+        Assert.Equal(BatchStatus.Rejected, (await _ingestor.FindBatchAsync(tenant, rejected.BatchId, Ct))!.Status);
+    }
+
     // ---------- CSV format through the real reader ----------
 
     [Fact]
