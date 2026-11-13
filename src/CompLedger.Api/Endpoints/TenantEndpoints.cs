@@ -40,6 +40,12 @@ public static class TenantEndpoints
             return RequestChecks.Problem(StatusCodes.Status400BadRequest, "name must be a string of 1 to 200 characters after trimming.");
         }
 
+        if (name.Contains('\0'))
+        {
+            // PostgreSQL text cannot store U+0000.
+            return RequestChecks.Problem(StatusCodes.Status400BadRequest, "name must not contain the character U+0000.");
+        }
+
         var tenantId = await tenants.CreateAsync(name, cancellationToken);
         return Results.Json(new TenantResponse(tenantId, name), statusCode: StatusCodes.Status201Created);
     }

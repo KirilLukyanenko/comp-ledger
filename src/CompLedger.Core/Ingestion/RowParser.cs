@@ -145,7 +145,8 @@ public sealed partial class RowParser(ErrorCollector errors)
             var column = IndexOfColumn(name);
             if (column < 0)
             {
-                errors.Add(new IngestionError(1, name, ErrorCodes.UnknownColumn, "The column is not part of the format."), position);
+                // The name as written, except U+0000: PostgreSQL jsonb cannot store it, so each one becomes U+FFFD.
+                errors.Add(new IngestionError(1, name.Replace('\0', '�'), ErrorCodes.UnknownColumn, "The column is not part of the format."), position);
             }
             else if (fieldIndex[column] >= 0)
             {

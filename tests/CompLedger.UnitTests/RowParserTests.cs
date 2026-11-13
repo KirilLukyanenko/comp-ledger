@@ -140,6 +140,41 @@ public sealed class RowParserTests
     }
 
     [Fact]
+    public void U0000_in_an_unknown_column_name_becomes_ufffd_one_for_one()
+    {
+        var outcome = Run(Header + ",gr\0ade, \0\0 ,\0employee_id,amount\0");
+
+        Assert.Equal(
+            [
+                (1, "gr�ade", ErrorCodes.UnknownColumn),
+                (1, "��", ErrorCodes.UnknownColumn),
+                (1, "�employee_id", ErrorCodes.UnknownColumn),
+                (1, "amount�", ErrorCodes.UnknownColumn),
+            ],
+            outcome.Report);
+        Assert.All(outcome.Errors, e => Assert.DoesNotContain('\0', e.Message));
+    }
+
+    [Fact]
+    public void U0000_in_a_data_field_breaks_the_field_rule_and_never_reaches_a_message()
+    {
+        var outcome = Run(Header, "E\0-1,BASE\0_SALARY,2026-01-0\0,1\0,EU\0", "E-1,BONUS_TARGET_PCT,2026-01-01,1,\0");
+
+        Assert.Equal(
+            [
+                (2, "employee_id", ErrorCodes.InvalidEmployeeId),
+                (2, "component", ErrorCodes.UnknownComponent),
+                (2, "effective_from", ErrorCodes.InvalidDate),
+                (2, "amount", ErrorCodes.InvalidAmount),
+                (2, "currency", ErrorCodes.InvalidCurrency),
+                (3, "currency", ErrorCodes.CurrencyNotAllowed),
+            ],
+            outcome.Report);
+        Assert.Empty(outcome.Rows);
+        Assert.All(outcome.Errors, e => Assert.DoesNotContain('\0', e.Message));
+    }
+
+    [Fact]
     public void Duplicate_required_columns_give_one_error_per_extra_occurrence_with_the_canonical_name()
     {
         var outcome = Run(Header + ",AMOUNT, Amount ");
