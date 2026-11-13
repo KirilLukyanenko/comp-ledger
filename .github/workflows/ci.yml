@@ -1,0 +1,199 @@
+name: ci
+
+# gates     -> tools/verify.sh: build, format, unit, integration (the same script the agent runs)
+# holdout   -> behaviour scenarios and load gate from the private comp-ledger-scenarios repository
+# ai-review -> the reviewer agent checks a pull request against its PRP (needs ANTHROPIC_API_KEY)
+# metrics   -> agent runs from metrics/runs.jsonl, as a table in the job summary
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Gates (tools/verify.sh)
+        shell: bash
+        run: bash tools/verify.sh 2>&1 | tee verify.log
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Gates"
+            echo '```'
+            grep -E "Passed!|Failed!" verify.log || true
+            tail -n 1 verify.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  holdout:
+    needs: gates
+    # Secrets are not available to pull requests from forks.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+
+      # Built before the scenarios are on disk, and from app/ only, so nothing in this commit's
+      # Dockerfile or build can read them.
+      - name: Build the API image from this commit
+        run: docker build -t comp-ledger:ci app
+
+      - name: Check out the holdout scenarios (read-only deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/comp-ledger-scenarios
+          ssh-key: ${{ secrets.SCENARIOS_DEPLOY_KEY }}
+          persist-credentials: false
+          path: holdout
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # This repository and its Actions logs are public, the scenarios are not. Full test output
+      # (expected values, request bodies) stays on the runner; the log shows counts, the names of
+      # failed scenarios and the load measurements. Run the suite locally for details.
+      - name: Behaviour scenarios
+        working-directory: holdout
+        shell: bash
+        env:
+          COMP_LEDGER_IMAGE: comp-ledger:ci
+        run: |
+          set +e
+          dotnet test --project scenarios/prp-001 > "$RUNNER_TEMP/scenarios.log" 2>&1
+          code=$?
+          set -e
+          grep -E "^\s*(total|failed|succeeded|skipped):" "$RUNNER_TEMP/scenarios.log" | tee "$RUNNER_TEMP/scenarios.summary"
+          grep -E "^\s*failed CompLedgerHoldout\." "$RUNNER_TEMP/scenarios.log" | sed -E 's/^\s*failed //; s/ \([0-9.]+m?s\)$//' | tee "$RUNNER_TEMP/scenarios.failed" || true
+          exit $code
+
+      - name: Load gate
+        if: success()
+        working-directory: holdout
+        shell: bash
+        env:
+          COMP_LEDGER_IMAGE: comp-ledger:ci
+        run: |
+          set +e
+          dotnet test --project load --output Detailed > "$RUNNER_TEMP/load.log" 2>&1
+          code=$?
+          set -e
+          grep -E "^\s*(Small|Large):" "$RUNNER_TEMP/load.log" | sort -u | tee "$RUNNER_TEMP/load.summary"
+          grep -E "^\s*(passed|failed) CompLedgerHoldout\." "$RUNNER_TEMP/load.log" | sed -E 's/ \([0-9.]+m?s\)$//' | tee -a "$RUNNER_TEMP/load.summary"
+          exit $code
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Holdout scenarios"
+            echo '```'
+            cat "$RUNNER_TEMP/scenarios.summary" 2>/dev/null || echo "not run"
+            echo '```'
+            if [ -s "$RUNNER_TEMP/scenarios.failed" ]; then
+              echo "Failed:"; sed 's/^/- /' "$RUNNER_TEMP/scenarios.failed"
+            fi
+            echo "### Load gate (budgets from PRP 3.7, measured on this runner)"
+            echo '```'
+            cat "$RUNNER_TEMP/load.summary" 2>/dev/null || echo "not run"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ai-review:
+    needs: gates
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      CLAUDE_CODE_VERSION: 2.1.323
+    steps:
+      - name: Check for the API key
+        id: key
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::ANTHROPIC_API_KEY is not set, so the AI review is skipped."; fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: "22"
+
+      - name: Review against the PRP
+        if: steps.key.outputs.present == 'true'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          prompt="$(sed -e "s/{{BASE}}/$BASE/g" -e "s/{{HEAD}}/$HEAD/g" .github/ai-review/prompt.md)"
+          claude -p "$prompt" --output-format json --max-turns 60 \
+            --allowedTools "Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git show *)" \
+            > "$RUNNER_TEMP/review.json"
+          jq -r '.result' "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/review.md"
+
+      - name: Post the review
+        if: steps.key.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/review.md"
+
+      - name: Cost
+        if: steps.key.outputs.present == 'true'
+        run: |
+          jq -r '"### AI review\n\n| turns | duration | cost (API list price) | input | cache read | output |\n|---|---|---|---|---|---|\n| \(.num_turns) | \(.duration_ms/1000|floor) s | $\(.total_cost_usd*100|round/100) | \(.usage.input_tokens) | \(.usage.cache_read_input_tokens) | \(.usage.output_tokens) |"' \
+            "$RUNNER_TEMP/review.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict
+        if: steps.key.outputs.present == 'true'
+        run: |
+          verdict="$(grep -oE 'VERDICT: (approve|changes requested)' "$RUNNER_TEMP/review.md" | tail -n 1)"
+          echo "$verdict"
+          [ "$verdict" = "VERDICT: approve" ]
+
+  metrics:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Agent runs
+        run: dotnet run tools/metrics-report.cs >> "$GITHUB_STEP_SUMMARY"
