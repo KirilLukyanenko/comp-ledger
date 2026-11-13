@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using CompLedger.Infrastructure.Db;
 using Dapper;
+using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Networks;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -17,11 +19,25 @@ public sealed class PostgresFixture : IAsyncLifetime
 {
     public const string AppLogin = "comp_app_login";
 
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17-alpine")
-        .WithPassword(RandomPassword())
-        .Build();
+    /// <summary>The database's host name on <see cref="Network"/>, for other containers.</summary>
+    public const string NetworkAlias = "db";
+
+    private readonly PostgreSqlContainer _container;
 
     private NpgsqlDataSource? _appDataSource;
+
+    public PostgresFixture()
+    {
+        Network = new NetworkBuilder().Build();
+        _container = new PostgreSqlBuilder("postgres:17-alpine")
+            .WithPassword(RandomPassword())
+            .WithNetwork(Network)
+            .WithNetworkAliases(NetworkAlias)
+            .Build();
+    }
+
+    /// <summary>A network shared with containers that must reach the database, such as the API image under test.</summary>
+    public INetwork Network { get; }
 
     /// <summary>Connects as the container's superuser, which owns the schema. Only for migrations.</summary>
     public string OwnerConnectionString { get; private set; } = "";
@@ -64,6 +80,29 @@ public sealed class PostgresFixture : IAsyncLifetime
         }
 
         await _container.DisposeAsync();
+        await Network.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Creates an empty database on the same server and returns the owner and app connection strings that reach it
+    /// from another container on <see cref="Network"/>. Roles are server-wide, so the app login already exists.
+    /// </summary>
+    public async Task<(string Owner, string App)> CreateEmptyDatabaseForContainersAsync(string name)
+    {
+        await using (var owner = new NpgsqlConnection(OwnerConnectionString))
+        {
+            await owner.OpenAsync();
+            await owner.ExecuteAsync($"CREATE DATABASE {name}");
+        }
+
+        string ForContainer(string connectionString) => new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            Host = NetworkAlias,
+            Port = PostgreSqlBuilder.PostgreSqlPort,
+            Database = name,
+        }.ConnectionString;
+
+        return (ForContainer(OwnerConnectionString), ForContainer(AppConnectionString));
     }
 
     /// <summary>Inserts a tenant through the app login and returns its id.</summary>
