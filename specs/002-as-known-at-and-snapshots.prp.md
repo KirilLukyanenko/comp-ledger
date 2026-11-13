@@ -2,8 +2,8 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Ready |
-| Version    | 1.2 |
+| Status     | Implemented |
+| Version    | 1.3 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-13 |
 | Depends on | PRP-001 (2.1, implemented) |
@@ -105,7 +105,7 @@ Base path, JSON conventions and tenant resolution as in PRP-001 3.6.
 
 The PRP-001 batch resource gains `appliedAt`: the batch's apply time, or `null` for a `Rejected` batch.
 
-**Instant format in responses** (`knownAt`, `appliedAt`): UTC with exactly six fractional digits, `"2026-11-13T14:22:31.123456Z"`. An instant returned by the service, sent back as `knownAt`, means exactly that instant. The PRP-001 fields `receivedAt` and `completedAt` keep their format.
+**Instant format in responses** (`knownAt`, `appliedAt`): UTC with exactly six fractional digits, `"2026-11-13T14:22:31.123456Z"`. An instant returned by the service, sent back as `knownAt`, means exactly that instant. The order of properties in JSON responses is not part of the contract, so the new fields may sit anywhere in their objects. The PRP-001 fields `receivedAt` and `completedAt` keep their format.
 
 Snapshot resource:
 
@@ -210,7 +210,7 @@ src/CompLedger.Infrastructure/Queries/CompensationQueries.cs   # extended: optio
 src/CompLedger.Infrastructure/Snapshots/SnapshotStore.cs       # create, get, list
 src/CompLedger.Api/Endpoints/SnapshotEndpoints.cs
 tests/CompLedger.UnitTests/KnownAtTests.cs
-tests/CompLedger.IntegrationTests/{KnownAt,Snapshot}Tests.cs
+tests/CompLedger.IntegrationTests/{ApplyTime,KnownAt,Snapshot}Tests.cs
 ```
 
 ### 6.4 Technical decisions (fixed: changing one requires a PRP update first)
@@ -239,7 +239,8 @@ tests/CompLedger.IntegrationTests/{KnownAt,Snapshot}Tests.cs
 10. **Backfill of `applied_at`.** For an `Applied` batch, use the `recorded_at` of a value it inserted; else the `superseded_at` of a value it superseded; else, when every row was unchanged, `completed_at`. That batch changed no value, so any instant during it gives the same answers.
 11. **A new index costs on insert.** Check the 1M-row ingestion against PRP-001 3.7 locally after adding it.
 12. **`%00` in the path never reaches the app, and tests don't show it.** Kestrel refuses it with `400` while decoding the request target. `WebApplicationFactory` / `TestServer` skip that parser, so an integration test would reach the handler and see something else. Don't write middleware or tests for it; 3.2 leaves it to the server.
-13. **`snapshotId` parsing.** Bind the segment as a string and use `Guid.TryParseExact(value, "D", out id)`, which accepts either case and nothing but the hyphenated form. `Guid.TryParse` and a `{snapshotId:guid}` route constraint accept braces, and the constraint turns a malformed id into an unknown route (no tenant check, no `405`).
+13. **`snapshotId` parsing.** Bind the segment as a string, check it against the hyphenated-UUID pattern (`\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z`, the one tenant resolution uses), then `Guid.TryParseExact(value, "D", out id)`. `TryParseExact` alone trims surrounding whitespace, so `%20<id>` would find the snapshot. `Guid.TryParse` and a `{snapshotId:guid}` route constraint accept braces, and the constraint turns a malformed id into an unknown route (no tenant check, no `405`).
+14. **The lock wait needs a long command timeout.** A read or snapshot creation can wait for a whole 1M-row apply. Use the ingestor's command timeout (600 s) for the lock statement, not Npgsql's 30 s default, which would turn the wait into a `500`.
 
 ## 7. Implementation blueprint
 
@@ -292,9 +293,17 @@ POST /api/v1/snapshots
   knownAt <- SELECT clock_timestamp()
   INSERT INTO snapshots ...      // 23505 -> 409
   commit; log one entry; 201 + Location
+
+GET /api/v1/snapshots/{snapshotId}/employees/{employeeId}/compensation
+  validate path and query (404 malformed id, 400 asOf or knownAt given)
+  look up the snapshot (404)     // one transaction
+  the as-of read with knownAt above, at the snapshot's asOf and knownAt   // a second transaction:
+                                 // snapshots are immutable, so nothing changes in between
 ```
 
 Without `knownAt`, keep the PRP-001 query on current rows and take no lock.
+
+A `knownAt` later than the request time is only known to be invalid after the wait (the request time is read after the lock), so that `400` can come after waiting for a batch being applied. All other `400`s come before any wait.
 
 ### 7.3 Tasks (in order; one commit per task, message `PRP-002 Tn: <summary>`)
 
@@ -320,7 +329,7 @@ All PRP-001 tests must keep passing. Never weaken, skip or delete a test to make
 ## 9. Definition of done
 
 - [ ] Every rule in section 3 is implemented and covered by a test; A1 to A8 pass as integration tests.
-- [ ] All validation levels are green on a clean checkout; PRP-001 tests unchanged and green.
+- [ ] All validation levels are green on a clean checkout; PRP-001 tests green. They change only where this PRP requires it: exact response-shape assertions gain `knownAt` and `appliedAt`, and raw-SQL seeds of `Applied` batches set `applied_at`. No PRP-001 test is removed, skipped or loosened.
 - [ ] Migrations `0001` to `0005` are untouched.
 - [ ] No secrets, hostnames or credentials in the repository.
 - [ ] Nothing under `specs/`, `.claude/`, `.github/` or `metrics/` was changed.
@@ -350,3 +359,4 @@ All PRP-001 tests must keep passing. Never weaken, skip or delete a test to make
 | 1.0     | 2026-11-13 | First version (Draft) |
 | 1.1     | 2026-11-13 | Closes the 9 gaps found while writing the holdout scenarios. U+0000 in a path: replaced the `404` rule, which Kestrel makes impossible (it answers `400` before the app), with the server's `400` as a ProblemDetails exception (3.2, 3.3, 6.5 #12). No leap seconds in `knownAt`. `snapshotId`: hyphenated form only, either case, malformed is a lookup after `401`/`400`, `405` on wrong methods (6.5 #13). Other query parameters ignored on every new endpoint; `component` ignored on the snapshot read. Response `knownAt` echoes the request. Logging: no names, employee ids or amounts; refused creations log nothing; framework logs outside the rule. Duplicate body properties and parameter-name case are not part of the contract |
 | 1.2     | 2026-11-13 | Closes the 3 gaps found while aligning the holdout scenarios with 1.1: `%00` gets the server's `400` on any path, known or not; `405` on wrong methods covers the snapshot read path too; framework logs are the JSON entries whose `Category` starts with `Microsoft.` or `System.`. Status Ready: key decisions reviewed by the owner, holdout scenarios (80 methods, 360 cases) and load tests written |
+| 1.3     | 2026-11-13 | Implemented by agent run `prp002-20261113T220528Z-69ed45b3` on its first attempt, merged as `696a9af`. CI run 43521725973 on `main`: holdout 360/360 (PRP-001 509/509), load gate 7/7; 1M rows in 7.9 s with the new index, peak RSS 113.8 MiB; as-known-at p95 2.2 ms; snapshot creation p95 1.6 ms. Budgets kept at their starting values. Wording from the agent's spec gaps, no behaviour change: PRP-001 tests change only where this PRP requires it (section 9); JSON property order is not part of the contract (3.5); 6.5 #13 checks the hyphenated pattern before `TryParseExact`, which trims whitespace; 6.5 #14 lock-wait timeout; 7.2 blueprint for the snapshot read, and a future `knownAt` is refused only after the wait; `ApplyTimeTests.cs` in 6.3 |
