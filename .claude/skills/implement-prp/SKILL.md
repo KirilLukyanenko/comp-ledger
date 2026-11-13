@@ -5,7 +5,9 @@ argument-hint: <prp-number> [run-id]
 disable-model-invocation: true
 ---
 
-You are implementing PRP **$0**. Run id: `$1` (if this is literally `$1` or empty, there is no run id).
+You are implementing PRP **$0**. Run id: `$1`
+
+The run id is the second argument of `/implement-prp`. If it was not given, the value above is empty or a placeholder rather than an id like `prp001-20261113T140059Z-27ccf838`, and there is no run id.
 
 ## 1. Find and check the spec
 
