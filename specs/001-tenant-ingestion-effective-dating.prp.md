@@ -2,7 +2,7 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Draft |
+| Status     | Ready |
 | Version    | 1.3 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |
