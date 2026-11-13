@@ -258,6 +258,20 @@ public sealed partial class ApplyTimeTests(ApiFactory api) : IClassFixture<ApiFa
             Assert.Equal(1, await owner.ExecuteScalarAsync<long>(
                 "SELECT count(*) FROM pg_indexes WHERE indexname = 'ix_compensation_values_employee'"));
         }
+
+        // The later migrations run as this owner too, and leave the backfilled apply times alone.
+        foreach (var script in scripts.Skip(6))
+        {
+            await RunScriptAsync(ownerSource, script);
+        }
+
+        await using (var scope = await TenantScope.BeginAsync(appSource, tenants[0], Ct))
+        {
+            var batches = (await scope.Connection.QueryAsync<(Guid Id, DateTime? AppliedAt)>(
+                "SELECT id, applied_at FROM ingestion_batches", transaction: scope.Transaction)).ToList();
+            Assert.All(batches, b => Assert.Equal(expected[b.Id], b.AppliedAt));
+            Assert.Equal(0, await scope.Connection.ExecuteScalarAsync<long>("SELECT count(*) FROM snapshots", transaction: scope.Transaction));
+        }
     }
 
     /// <summary>The files of <c>db/migrations</c> in name order.</summary>
