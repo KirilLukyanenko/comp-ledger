@@ -14,6 +14,8 @@ public static class CompensationEndpoints
     }
 
     // Order of checks on both endpoints: tenant (401, middleware), query parameters (400), then the lookup (404).
+    // Whether knownAt is later than the request time is known only on the database clock, after the wait for a batch
+    // being applied; it is still decided before the lookup.
 
     private static async Task<IResult> GetAsOfAsync(string employeeId, HttpContext context, CompensationQueries queries, CancellationToken cancellationToken)
     {
@@ -30,10 +32,18 @@ public static class CompensationEndpoints
                 StatusCodes.Status400BadRequest, "asOf must be given at most once, as a real yyyy-MM-dd date from 1900-01-01 to 2999-12-31.");
         }
 
-        var components = await queries.GetAsOfAsync(context.GetTenantId(), employeeId, asOf, cancellationToken);
-        return components is null
-            ? EmployeeNotFound()
-            : Results.Json(new AsOfResponse(employeeId, asOf, components));
+        if (!RequestChecks.TryReadKnownAt(context.Request, out var knownAt))
+        {
+            return RequestChecks.InvalidKnownAt();
+        }
+
+        var result = await queries.GetAsOfAsync(context.GetTenantId(), employeeId, asOf, knownAt, cancellationToken);
+        return result.Outcome switch
+        {
+            CompensationOutcome.KnownAtAfterRequestTime => RequestChecks.InvalidKnownAt(),
+            CompensationOutcome.EmployeeNotFound => RequestChecks.EmployeeNotFound(),
+            _ => Results.Json(new AsOfResponse(employeeId, asOf, RequestChecks.FormatKnownAt(knownAt), result.Periods)),
+        };
     }
 
     private static async Task<IResult> GetHistoryAsync(string employeeId, HttpContext context, CompensationQueries queries, CancellationToken cancellationToken)
@@ -50,16 +60,22 @@ public static class CompensationEndpoints
             }
         }
 
-        var periods = await queries.GetHistoryAsync(context.GetTenantId(), employeeId, component, cancellationToken);
-        return periods is null
-            ? EmployeeNotFound()
-            : Results.Json(new HistoryResponse(employeeId, periods));
+        if (!RequestChecks.TryReadKnownAt(context.Request, out var knownAt))
+        {
+            return RequestChecks.InvalidKnownAt();
+        }
+
+        var result = await queries.GetHistoryAsync(context.GetTenantId(), employeeId, component, knownAt, cancellationToken);
+        return result.Outcome switch
+        {
+            CompensationOutcome.KnownAtAfterRequestTime => RequestChecks.InvalidKnownAt(),
+            CompensationOutcome.EmployeeNotFound => RequestChecks.EmployeeNotFound(),
+            _ => Results.Json(new HistoryResponse(employeeId, RequestChecks.FormatKnownAt(knownAt), result.Periods)),
+        };
     }
 
-    private static IResult EmployeeNotFound() =>
-        RequestChecks.Problem(StatusCodes.Status404NotFound, "The employee has no compensation values.");
+    /// <summary><see cref="KnownAt"/> is null when the parameter was not given, otherwise the requested instant.</summary>
+    private sealed record AsOfResponse(string EmployeeId, DateOnly AsOf, string? KnownAt, IReadOnlyList<CompensationPeriod> Components);
 
-    private sealed record AsOfResponse(string EmployeeId, DateOnly AsOf, IReadOnlyList<CompensationPeriod> Components);
-
-    private sealed record HistoryResponse(string EmployeeId, IReadOnlyList<CompensationPeriod> Periods);
+    private sealed record HistoryResponse(string EmployeeId, string? KnownAt, IReadOnlyList<CompensationPeriod> Periods);
 }

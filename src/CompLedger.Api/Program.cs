@@ -3,6 +3,7 @@ using CompLedger.Api.Tenancy;
 using CompLedger.Infrastructure.Db;
 using CompLedger.Infrastructure.Ingestion;
 using CompLedger.Infrastructure.Queries;
+using CompLedger.Infrastructure.Snapshots;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +19,7 @@ builder.Services.AddSingleton(services => NpgsqlDataSource.Create(
 builder.Services.AddSingleton<TenantStore>();
 builder.Services.AddSingleton<PostgresIngestor>();
 builder.Services.AddSingleton<CompensationQueries>();
+builder.Services.AddSingleton<SnapshotStore>();
 
 var app = builder.Build();
 
@@ -42,6 +44,7 @@ if (app.Configuration.GetValue<bool>("TenantAdminApi:Enabled"))
 
 app.MapIngestionEndpoints(app.Configuration.GetValue<long?>("Ingestion:MaxBodyBytes") ?? IngestionEndpoints.DefaultMaxBodyBytes);
 app.MapCompensationEndpoints();
+app.MapSnapshotEndpoints();
 
 await app.RunAsync();
 

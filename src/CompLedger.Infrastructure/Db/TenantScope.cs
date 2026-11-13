@@ -9,6 +9,9 @@ namespace CompLedger.Infrastructure.Db;
 /// </summary>
 public sealed class TenantScope : IAsyncDisposable
 {
+    /// <summary>Applying a large batch can take longer than Npgsql's default command timeout.</summary>
+    private const int LockTimeoutSeconds = 600;
+
     private readonly Guid _tenantId;
     private NpgsqlTransaction? _transaction;
 
@@ -37,6 +40,28 @@ public sealed class TenantScope : IAsyncDisposable
             await connection.DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Waits while a batch of this tenant is being applied, then returns the database clock (PRP-002 3.4 item 4).
+    /// Ingestion holds the exclusive form of this lock from its apply time to its commit, so after the wait every
+    /// batch applied at or before the returned instant has committed, and every later batch gets a later apply time.
+    /// The lock is transaction-level and shared: readers do not wait for each other, and it ends with the transaction.
+    /// </summary>
+    public async Task<DateTime> WaitForAppliesAsync(CancellationToken cancellationToken)
+    {
+        await Connection.ExecuteAsync(new CommandDefinition(
+            "SELECT pg_advisory_xact_lock_shared(hashtextextended(@Tenant, 0))",
+            new { Tenant = _tenantId.ToString("D") },
+            Transaction,
+            LockTimeoutSeconds,
+            cancellationToken: cancellationToken));
+
+        // A statement of its own, after the lock: in READ COMMITTED each statement sees what was committed before it
+        // started, and so does every statement the caller runs after this one.
+        var requestTime = await Connection.ExecuteScalarAsync<DateTime>(new CommandDefinition(
+            "SELECT clock_timestamp()", transaction: Transaction, cancellationToken: cancellationToken));
+        return DateTime.SpecifyKind(requestTime, DateTimeKind.Utc);
     }
 
     public async Task CommitAsync(CancellationToken cancellationToken)

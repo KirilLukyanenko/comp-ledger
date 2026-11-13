@@ -173,8 +173,8 @@ public sealed class RowLevelSecurityTests(PostgresFixture fixture)
     private static Task<int> InsertBatchAsync(NpgsqlConnection connection, NpgsqlTransaction? transaction, Guid batchId, Guid tenant) =>
         connection.ExecuteAsync(
             """
-            INSERT INTO ingestion_batches (id, tenant_id, status, received_at, completed_at, total_rows, inserted_rows, corrected_rows, unchanged_rows, error_count)
-            VALUES (@batchId, @tenant, 'Applied', now(), now(), 1, 1, 0, 0, 0)
+            INSERT INTO ingestion_batches (id, tenant_id, status, received_at, completed_at, applied_at, total_rows, inserted_rows, corrected_rows, unchanged_rows, error_count)
+            VALUES (@batchId, @tenant, 'Applied', now(), now(), now(), 1, 1, 0, 0, 0)
             """,
             new { batchId, tenant },
             transaction);

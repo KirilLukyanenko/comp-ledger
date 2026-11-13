@@ -51,7 +51,7 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
             // Drop everything staged, then record the rejection in a transaction of its own.
             await scope.RestartAsync(cancellationToken);
             var rejected = new IngestionBatch(
-                batchId, BatchStatus.Rejected, receivedAt, UtcNow(), new BatchRows(parser.TotalRows, 0, 0, 0), errors.Count, errors.ToList());
+                batchId, BatchStatus.Rejected, receivedAt, UtcNow(), null, new BatchRows(parser.TotalRows, 0, 0, 0), errors.Count, errors.ToList());
             await InsertBatchAsync(scope, tenantId, rejected, cancellationToken);
             await scope.CommitAsync(cancellationToken);
             return rejected;
@@ -62,14 +62,16 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
             scope, "SELECT pg_advisory_xact_lock(hashtextextended(@Tenant, 0))", new { Tenant = tenantId.ToString("D") }, cancellationToken);
 
         // One apply time per batch, read after the lock. now() would be the transaction start, which is before it.
-        var appliedAt = await scope.Connection.ExecuteScalarAsync<DateTime>(
-            new CommandDefinition("SELECT clock_timestamp()", transaction: scope.Transaction, cancellationToken: cancellationToken));
+        var appliedAt = DateTime.SpecifyKind(
+            await scope.Connection.ExecuteScalarAsync<DateTime>(
+                new CommandDefinition("SELECT clock_timestamp()", transaction: scope.Transaction, cancellationToken: cancellationToken)),
+            DateTimeKind.Utc);
 
         var total = parser.TotalRows;
         await InsertBatchAsync(
             scope,
             tenantId,
-            new IngestionBatch(batchId, BatchStatus.Applied, receivedAt, receivedAt, new BatchRows(total, 0, 0, 0), 0, []),
+            new IngestionBatch(batchId, BatchStatus.Applied, receivedAt, receivedAt, appliedAt, new BatchRows(total, 0, 0, 0), 0, []),
             cancellationToken);
 
         var mergeParameters = new { TenantId = tenantId, BatchId = batchId, AppliedAt = appliedAt };
@@ -104,7 +106,7 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
             cancellationToken);
 
         var applied = new IngestionBatch(
-            batchId, BatchStatus.Applied, receivedAt, UtcNow(), new BatchRows(total, written - corrected, corrected, total - written), 0, []);
+            batchId, BatchStatus.Applied, receivedAt, UtcNow(), appliedAt, new BatchRows(total, written - corrected, corrected, total - written), 0, []);
         await ExecuteAsync(
             scope,
             """
@@ -133,7 +135,7 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
         await using var scope = await TenantScope.BeginAsync(dataSource, tenantId, cancellationToken);
         var record = await scope.Connection.QuerySingleOrDefaultAsync<BatchRecord>(new CommandDefinition(
             """
-            SELECT id AS BatchId, status AS Status, received_at AS ReceivedAt, completed_at AS CompletedAt,
+            SELECT id AS BatchId, status AS Status, received_at AS ReceivedAt, completed_at AS CompletedAt, applied_at AS AppliedAt,
                    total_rows AS Total, inserted_rows AS Inserted, corrected_rows AS Corrected, unchanged_rows AS Unchanged,
                    error_count AS ErrorCount, errors::text AS ErrorsJson
             FROM ingestion_batches
@@ -154,6 +156,7 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
             record.Status,
             DateTime.SpecifyKind(record.ReceivedAt, DateTimeKind.Utc),
             DateTime.SpecifyKind(record.CompletedAt, DateTimeKind.Utc),
+            record.AppliedAt is { } appliedAt ? DateTime.SpecifyKind(appliedAt, DateTimeKind.Utc) : null,
             new BatchRows(record.Total, record.Inserted, record.Corrected, record.Unchanged),
             record.ErrorCount,
             JsonSerializer.Deserialize<List<IngestionError>>(record.ErrorsJson, ErrorJsonOptions) ?? []);
@@ -269,9 +272,9 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
         ExecuteAsync(
             scope,
             """
-            INSERT INTO ingestion_batches (id, tenant_id, status, received_at, completed_at,
+            INSERT INTO ingestion_batches (id, tenant_id, status, received_at, completed_at, applied_at,
                                            total_rows, inserted_rows, corrected_rows, unchanged_rows, error_count, errors)
-            VALUES (@BatchId, @TenantId, @Status, @ReceivedAt, @CompletedAt,
+            VALUES (@BatchId, @TenantId, @Status, @ReceivedAt, @CompletedAt, @AppliedAt,
                     @Total, @Inserted, @Corrected, @Unchanged, @ErrorCount, @Errors::jsonb)
             """,
             new
@@ -281,6 +284,7 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
                 batch.Status,
                 batch.ReceivedAt,
                 batch.CompletedAt,
+                batch.AppliedAt,
                 batch.Rows.Total,
                 batch.Rows.Inserted,
                 batch.Rows.Corrected,
@@ -317,6 +321,8 @@ public sealed class PostgresIngestor(NpgsqlDataSource dataSource)
         public DateTime ReceivedAt { get; set; }
 
         public DateTime CompletedAt { get; set; }
+
+        public DateTime? AppliedAt { get; set; }
 
         public int Total { get; set; }
 
