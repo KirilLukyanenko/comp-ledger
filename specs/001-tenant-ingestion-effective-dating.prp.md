@@ -2,8 +2,8 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Implemented |
-| Version    | 1.4 |
+| Status     | Ready |
+| Version    | 2.0 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |
 | Depends on | none (first feature; includes the solution skeleton) |
@@ -73,7 +73,7 @@ Field rules:
 | `EMPTY_FILE`            | file   | Nothing but a BOM and whitespace, or a valid header with no data rows |
 | `INVALID_ENCODING`      | file   | Bytes that are not valid UTF-8. Reading stops at that point |
 | `MISSING_COLUMN`        | header | A required column is absent. One error per missing column |
-| `UNKNOWN_COLUMN`        | header | A column not in the list. One error per occurrence, so `grade,grade` gives two |
+| `UNKNOWN_COLUMN`        | header | A column not in the list. One error per occurrence, so `grade,grade` gives two. If the name contains U+0000, `column` has each U+0000 replaced by U+FFFD (PostgreSQL `jsonb` cannot store U+0000) |
 | `DUPLICATE_COLUMN`      | header | A required column appears more than once. One error per extra occurrence |
 | `MALFORMED_CSV`         | row, or header at row 1 | The row cannot be parsed, has the wrong number of fields, or is a blank line (3.3). Such a row gets no other errors. At row 1 (a blank or unparseable header, 3.3 Header) it is a header error and the only error of the batch |
 | `INVALID_EMPLOYEE_ID`   | field  | Breaks the `employee_id` rule |
@@ -87,7 +87,7 @@ Field rules:
 | `INVALID_CURRENCY`      | field  | A currency is present and allowed, but it is not three uppercase ASCII letters |
 | `DUPLICATE_KEY_IN_FILE` | row    | Two or more rows **without other errors** share `(employee_id, component, effective_from)`. Every row of the group gets this error. Rows that already have errors are not part of any group |
 
-Error object: `{ "row": 4, "column": "amount", "code": "INVALID_AMOUNT", "message": "..." }`. `message` is free text and not part of the contract.
+Error object: `{ "row": 4, "column": "amount", "code": "INVALID_AMOUNT", "message": "..." }`. `message` is free text and not part of the contract, but it never contains U+0000.
 
 | Error level | `row` | `column` |
 |-------------|-------|----------|
@@ -130,7 +130,7 @@ Base path `/api/v1`. JSON uses camelCase. Dates are `"yyyy-MM-dd"`. Amounts are 
 | Method | Path | Tenant | Result |
 |--------|------|--------|--------|
 | GET  | `/health` | no | `200 {"status":"ok"}`. Liveness only: it doesn't touch the database |
-| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). The content type follows the same rules as ingestion (below), with media type `application/json`: compared case-insensitively, parameters allowed, any `charset` other than `utf-8` gives `415`. Another media type, or no `Content-Type`, gives `415`. Malformed JSON gives `400`. Property names are matched case-insensitively, as ASP.NET Core does by default, so `{"Name":"Acme"}` is accepted; a body with more than one property matching `name` is not part of the contract. A `name` that is missing, `null` or not a string, or that is not 1 to 200 characters long after trimming (counted as .NET `string.Length`, i.e. UTF-16 code units). Trimming uses the CSV set (space, tab, CR, LF) and nothing else, so a no-break space is kept. The name is stored and returned trimmed. Unknown JSON properties are ignored. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
+| POST | `/api/v1/tenants` | no | Body `{"name":"Acme"}` with `Content-Type: application/json` gives `201 {"id","name"}`, with no `Location` (there is no tenant resource to point to yet). The content type follows the same rules as ingestion (below), with media type `application/json`: compared case-insensitively, parameters allowed, any `charset` other than `utf-8` gives `415`. Another media type, or no `Content-Type`, gives `415`. Malformed JSON gives `400`. Property names are matched case-insensitively, as ASP.NET Core does by default, so `{"Name":"Acme"}` is accepted; a body with more than one property matching `name` is not part of the contract. A `name` that is missing, `null` or not a string, or that is not 1 to 200 characters long after trimming (counted as .NET `string.Length`, i.e. UTF-16 code units). Trimming uses the CSV set (space, tab, CR, LF) and nothing else, so a no-break space is kept. A name that contains U+0000 anywhere gives `400`, because PostgreSQL `text` cannot store it. The name is stored and returned trimmed. Unknown JSON properties are ignored. Available only when `TenantAdminApi:Enabled=true`, otherwise `404` |
 | POST | `/api/v1/ingestions` | yes | Body is CSV (content type rules below). Returns `201` with a batch (status `Applied`) and `Location: /api/v1/ingestions/{batchId}`, or `422` with a batch (status `Rejected`) and no `Location`. A body over `Ingestion:MaxBodyBytes` (default 256 MiB) gives `413` |
 | GET  | `/api/v1/ingestions/{batchId}` | yes | `200` batch. `404` if it does not exist **in this tenant**, or if `batchId` is not a UUID |
 | GET  | `/api/v1/employees/{employeeId}/compensation?asOf=yyyy-MM-dd` | yes | Values in effect on `asOf`, ordered by component code (ordinal). `asOf` is optional and defaults to today (UTC). When present, it must be a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, otherwise `400`. The value is not trimmed, so `asOf=%202031-01-01` is `400`, and an empty `asOf=` is also `400`. `404` if the employee has no values in this tenant at all; `200` with empty `components` if they have values but none in effect on that date |
@@ -281,18 +281,23 @@ A file without a `currency` column returns `422` with `MISSING_COLUMN` on row 1,
 
 ### 6.2 Current state of the repository
 
+Version 1.4 of this PRP is implemented and merged (commit `786b8c2`): the whole target tree from 6.3 exists, with tests for every rule. Next to it:
+
 ```
 comp-ledger/
 ├── CLAUDE.md
 ├── .claude/            # skills, sub-agents, permissions (do not edit)
 ├── .githooks/          # pre-commit secret scan
-├── .github/workflows/  # CI (do not edit)
+├── .github/            # CI: gates, holdout, load, AI review (do not edit)
 ├── metrics/            # run records written by tools/run-prp.cs (do not edit)
 ├── specs/              # PRPs (do not edit)
 └── tools/
     ├── verify.sh       # the gates from section 8, used by /verify and by CI
-    └── run-prp.cs      # starts agent runs; not part of the product
+    ├── run-prp.cs      # starts agent runs; not part of the product
+    └── metrics-report.cs
 ```
+
+A run against version 2.0 changes this code; it does not start again. Only tasks T7 and T8 in 7.3 are new.
 
 ### 6.3 Target tree after this PRP
 
@@ -340,6 +345,7 @@ comp-ledger/
 | UUIDv7 (`Guid.CreateVersion7()`) for tenant and batch ids | Ordered ids, good index locality |
 | xUnit v3 with the built-in `Assert`; Testcontainers.PostgreSql; `postgres:17-alpine` | FluentAssertions 8 has a commercial license, so it is not used |
 | Database roles: `comp_app` (NOLOGIN) holds table privileges; the app connects with a LOGIN role that is a member of `comp_app` | The app never connects as table owner or superuser, so row-level security applies |
+| **No foreign keys on `compensation_values`** (since 2.0). `tenant_id`, `batch_id` and `superseded_by_batch_id` are plain columns; the pipeline guarantees them | PostgreSQL checks a foreign key once per inserted or updated row. In `EXPLAIN ANALYZE` of the 1.4 merge inserting 1M rows, the insert itself took 4.3 s and the `tenant_id` and `batch_id` checks 19.6 s and 19.8 s. CI measured the whole 1M-row upload at 34.4, 56.8 and 58.0 s against the 60 s budget. The tenant is resolved from `tenants` before the upload, and the batch row is inserted in the same transaction before any value, so a check per row adds nothing. Other tables keep their foreign keys |
 
 **Role provisioning is the environment's job, not the migrations' job.** Before the first start, the environment creates `comp_app` (NOLOGIN) and a LOGIN role in it with a generated password. The integration-test fixture and the holdout harness both do this. Migrations grant privileges to `comp_app` and fail with a clear message if it does not exist. **No password appears anywhere in the repository.**
 
@@ -399,18 +405,19 @@ CREATE TABLE ingestion_batches (
   errors          jsonb NOT NULL DEFAULT '[]'   -- at most 100 entries
 );
 
+-- since 2.0: no foreign keys on this table (6.4); 0005 drops the ones 0003 created
 CREATE TABLE compensation_values (
   id                      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  tenant_id               uuid NOT NULL REFERENCES tenants(id),
+  tenant_id               uuid NOT NULL,            -- a tenants.id
   employee_id             text NOT NULL,
   component               text NOT NULL,
   effective_from          date NOT NULL,
   amount                  numeric(19,4) NOT NULL,
   currency                char(3),
-  batch_id                uuid NOT NULL REFERENCES ingestion_batches(id),
+  batch_id                uuid NOT NULL,            -- an Applied ingestion_batches.id of the same tenant
   recorded_at             timestamptz NOT NULL,
   superseded_at           timestamptz,
-  superseded_by_batch_id  uuid REFERENCES ingestion_batches(id)
+  superseded_by_batch_id  uuid                      -- an Applied ingestion_batches.id of the same tenant
 );
 
 -- one current value per key
@@ -487,6 +494,10 @@ As-of query: `DISTINCT ON (component)` over current rows with `effective_from <=
 | T4 | `PostgresIngestor`: staging, `COPY`, duplicate detection, merge, batch records | Integration tests cover inserted, unchanged, corrected and rejected, the superseded row kept in A4, and two concurrent batches for one tenant giving the same result as sequential ones, with `superseded_at >= recorded_at` on every superseded row (7.1) |
 | T5 | Endpoints, tenant middleware, queries, ProblemDetails | Integration tests through `WebApplicationFactory` reproduce A1 to A10 |
 | T6 | `Dockerfile` and the runtime configuration from 6.4 | `docker build` succeeds; the container starts against a Testcontainers database and `/health` returns 200 |
+| T7 | **2.0.** Migration `0005_drop_compensation_value_foreign_keys.sql` drops `compensation_values_tenant_id_fkey`, `compensation_values_batch_id_fkey` and `compensation_values_superseded_by_batch_id_fkey`. Migrations 0001 to 0004 are not edited: they may already be applied somewhere | Integration tests prove: `compensation_values` has no foreign keys (`pg_constraint`); after applied, corrected and rejected batches, every value's `tenant_id`, `batch_id` and non-null `superseded_by_batch_id` point to an existing tenant and `Applied` batch of the same tenant; all 1.4 tests still pass. The PR description gives a local 1M-row timing next to the 1.4 numbers in 6.4 |
+| T8 | **2.0.** U+0000 rules: tenant names in 3.6, `UNKNOWN_COLUMN` and `message` in 3.4 | Integration tests: a tenant name containing U+0000 gives 400 and creates no tenant; a header with an unknown column containing U+0000 gives 422 with U+FFFD in `column`; neither gives 500 |
+
+Tasks T1 to T6 are implemented (version 1.4). A run against version 2.0 does T7, then T8.
 
 ## 8. Validation loop (run these yourself; all must be green before you open a PR)
 
@@ -522,6 +533,8 @@ If a level fails, fix the code and rerun that level. Never weaken, skip or delet
 - Logging CSV contents, employee ids together with amounts, or whole request bodies.
 - Adding endpoints, columns or components that are not in this PRP.
 - Catching exceptions to turn a failing test green.
+- Replacing the dropped foreign keys with triggers or per-row checks: that brings the cost back.
+- Editing a migration that has already been merged instead of adding a new one.
 
 ## 11. How this PRP is checked beyond the agent's view
 
@@ -542,3 +555,4 @@ Recorded for every run: whether the first complete attempt passed all gates, how
 | 1.2     | 2026-11-12 | Resolved the 10 gaps found while aligning the holdout scenarios with 1.1 (still Draft). 3.3: header names use the value trimming set; a lone `""` record is a blank line. 3.4: `rows.total` after `INVALID_ENCODING` counts fully parsed rows only. 3.6: header whitespace is not part of the contract; tenant creation details (trimmed name, length unit, null or non-string name, missing content type); `asOf` is not trimmed; GET check order 401 → 400 → 404; unknown routes are 404 without a tenant check. 3.7: where the log properties appear and their types. 6.4: the API runs as PID 1 |
 | 1.3     | 2026-11-12 | Resolved the 3 gaps found while aligning the holdout scenarios with 1.2 (still Draft). 3.6: a known path with the wrong method gives 405 with ProblemDetails and `Allow`, without a tenant check; tenant names are trimmed with the CSV whitespace set only; `POST /tenants` content type follows the ingestion rules with `application/json` |
 | 1.4     | 2026-11-13 | Resolved the 7 gaps the implementer agent reported in its first run (run `prp001-20261113T105317Z-5f082a87`, stopped at T1 by a harness misconfiguration before any code was built). 3.3: only a UTF-8 BOM is recognised, any other BOM gives `INVALID_ENCODING`; a blank or unparseable first record is `MALFORMED_CSV` at row 1, a header error. 3.4: `MALFORMED_CSV` can be a header error, with `column` `null`. 3.6: `POST /tenants` property names are case-insensitive; repeated `asOf` or `component` gives 400. 6.2: the tree matches the repository. 6.5: gotcha 11 rewritten for BOM handling; new gotchas 14 (NuGet audit, seen when the gates built that run's skeleton), 15 (repeated query parameters), 16 (`now()`). 7.1, 7.2: one apply time per batch from `clock_timestamp()` after the lock, used for `recorded_at` and `superseded_at`. 7.3: T4 checks `superseded_at >= recorded_at` |
+| 2.0     | 2026-11-13 | Major: changes the normative data model after 1.4 was implemented and merged (`786b8c2`). 6.4, 7.1: no foreign keys on `compensation_values`, because per-row checks took most of the 1M-row time (1.4 run `prp001-20261113T111951Z-b9d316a7`: 19.6 s and 19.8 s of FK checks against 4.3 s for the insert itself; CI: 34.4, 56.8 and 58.0 s for the whole upload against the 60 s budget). 3.4, 3.6: U+0000 in a tenant name is 400, in an unknown column name it becomes U+FFFD, never in `message` (1.4 returned 500 for the tenant name). 6.2: current state is the 1.4 implementation. 7.3: new tasks T7 (migration 0005) and T8 (U+0000). 10: two new anti-patterns. The 60 s budget is unchanged until a 2.0 CI run measures it |
