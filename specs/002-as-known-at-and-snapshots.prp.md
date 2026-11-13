@@ -2,8 +2,8 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Draft |
-| Version    | 1.1 |
+| Status     | Ready |
+| Version    | 1.2 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-13 |
 | Depends on | PRP-001 (2.1, implemented) |
@@ -60,8 +60,8 @@ The API answers "what was in effect on date D, **as the system knew it at instan
 
 **Path parameters.**
 
-- `snapshotId` must be a UUID in the hyphenated 8-4-4-4-12 form. Hex digits match in either case: an uppercase id is the same snapshot. Any other spelling (braces, parentheses, 32 digits without hyphens, anything else) gives `404`. A malformed `snapshotId` is a failed lookup, not an unknown route: the tenant check (`401`) and query validation (`400`) come first, and a wrong method on `/api/v1/snapshots/{anything}` is `405`.
-- A request path containing `%00` (U+0000), on any endpoint, the PRP-001 ones included, is refused by the HTTP server (Kestrel) with `400` before the application sees it. There is no tenant check, the body and headers of that response are not part of the contract (it is not ProblemDetails), and nothing changes. The application does not try to handle or override this (6.5 #12). U+0000 in a query value does reach the application: in `knownAt`, `asOf` or `component` it is an ordinary invalid value (`400` ProblemDetails).
+- `snapshotId` must be a UUID in the hyphenated 8-4-4-4-12 form. Hex digits match in either case: an uppercase id is the same snapshot. Any other spelling (braces, parentheses, 32 digits without hyphens, anything else) gives `404`. A malformed `snapshotId` is a failed lookup, not an unknown route: the tenant check (`401`) and query validation (`400`) come first, and a wrong method on `/api/v1/snapshots/{anything}` or `/api/v1/snapshots/{anything}/employees/{employeeId}/compensation` is `405`.
+- A request path containing `%00` (U+0000), on any path, known or not (the PRP-001 endpoints, `/health` and unknown routes included), is refused by the HTTP server (Kestrel) with `400` before the application sees it. There is no tenant check, the body and headers of that response are not part of the contract (it is not ProblemDetails), and nothing changes. The application does not try to handle or override this (6.5 #12). U+0000 in a query value does reach the application: in `knownAt`, `asOf` or `component` it is an ordinary invalid value (`400` ProblemDetails).
 
 ### 3.3 Error responses
 
@@ -135,7 +135,7 @@ Starting budgets. The first CI run calibrates them; any change is recorded in th
 | Ingestion | PRP-001 3.7 budgets still hold with this PRP's new index: 1M rows in 60 s or less, the same memory budgets |
 | As-known-at latency | After the PRP-001 load gate's 1M-row file is ingested into a tenant, then corrected by a second upload of 100k rows, 200 sequential as-of requests with `knownAt` for different employees: p95 of the HTTP round trip 100 ms or less on a GitHub-hosted runner |
 | Snapshot creation | Independent of tenant size: with the 1M-row tenant above, `POST /api/v1/snapshots` p95 100 ms or less over 20 requests, when no batch is being applied |
-| Logging | One JSON log entry per created snapshot with `TenantId`, `SnapshotId`, `AsOf` (`yyyy-MM-dd`), `KnownAt` (the response format) and `DurationMs`, under `State` as in PRP-001 3.7. The application logs no snapshot name, no employee id and no amount. Refused creations (`400`, `409`, `415`) and all reads log no entry of their own. Framework logs (for example ASP.NET Core request logging) are outside this rule |
+| Logging | One JSON log entry per created snapshot with `TenantId`, `SnapshotId`, `AsOf` (`yyyy-MM-dd`), `KnownAt` (the response format) and `DurationMs`, under `State` as in PRP-001 3.7. The application logs no snapshot name, no employee id and no amount. Refused creations (`400`, `409`, `415`) and all reads log no entry of their own. Framework logs are outside this rule: JSON entries whose `Category` starts with `Microsoft.` or `System.`. Everything else the process writes counts as the application's |
 
 ## 4. Acceptance examples (public)
 
@@ -349,3 +349,4 @@ All PRP-001 tests must keep passing. Never weaken, skip or delete a test to make
 |---------|------------|--------|
 | 1.0     | 2026-11-13 | First version (Draft) |
 | 1.1     | 2026-11-13 | Closes the 9 gaps found while writing the holdout scenarios. U+0000 in a path: replaced the `404` rule, which Kestrel makes impossible (it answers `400` before the app), with the server's `400` as a ProblemDetails exception (3.2, 3.3, 6.5 #12). No leap seconds in `knownAt`. `snapshotId`: hyphenated form only, either case, malformed is a lookup after `401`/`400`, `405` on wrong methods (6.5 #13). Other query parameters ignored on every new endpoint; `component` ignored on the snapshot read. Response `knownAt` echoes the request. Logging: no names, employee ids or amounts; refused creations log nothing; framework logs outside the rule. Duplicate body properties and parameter-name case are not part of the contract |
+| 1.2     | 2026-11-13 | Closes the 3 gaps found while aligning the holdout scenarios with 1.1: `%00` gets the server's `400` on any path, known or not; `405` on wrong methods covers the snapshot read path too; framework logs are the JSON entries whose `Category` starts with `Microsoft.` or `System.`. Status Ready: key decisions reviewed by the owner, holdout scenarios (80 methods, 360 cases) and load tests written |
