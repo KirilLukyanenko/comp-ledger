@@ -10,6 +10,7 @@ The PRP, not the code, is the source of truth. If code and PRP disagree, the cod
 |-----|-------|--------|---------|
 | [001](001-tenant-ingestion-effective-dating.prp.md) | Multi-tenant compensation ingestion with effective dating | Implemented | 2.1 |
 | [002](002-as-known-at-and-snapshots.prp.md) | As-known-at queries and snapshots | Implemented | 1.3 |
+| [005](005-mcp-server.prp.md) | MCP server over the compensation API | Draft | 1.0 |
 
 ## Who does what
 

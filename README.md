@@ -11,7 +11,7 @@ The service is the vehicle. The point is the process around it: how to hand a fe
 | [PRP-001](specs/001-tenant-ingestion-effective-dating.prp.md) | CSV ingestion of compensation values with effective dating, append-only corrections, atomic batches, tenant isolation enforced by PostgreSQL row-level security | Implemented, version 2.1 |
 | [PRP-002](specs/002-as-known-at-and-snapshots.prp.md) | "As known at" queries over the two time axes PRP-001 already stores, and named snapshots that give the same answer forever without copying data | Implemented, version 1.3 |
 
-Next: computed fields, streaming export, an MCP server over the API.
+Next: an MCP server over the API ([PRP-005](specs/005-mcp-server.prp.md), draft), then computed fields and streaming export.
 
 ## How a feature gets built
 
