@@ -1,6 +1,6 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CompLedger.Core;
 using CompLedger.Core.Ingestion;
 
 namespace CompLedger.Infrastructure.Ingestion;
@@ -34,5 +34,5 @@ public sealed class InstantJsonConverter : JsonConverter<DateTime>
         throw new NotSupportedException("Instants are only written.");
 
     public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options) =>
-        writer.WriteStringValue(value.ToString("yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'", CultureInfo.InvariantCulture));
+        writer.WriteStringValue(KnownAt.Format(value));
 }
