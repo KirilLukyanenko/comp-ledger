@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Dapper;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -176,6 +177,33 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
     }
 
     [Theory]
+    [InlineData("\\u0000{0}")]
+    [InlineData("{0}\\u0000")]
+    [InlineData("{0}\\u0000Corp")]
+    [InlineData(" \\u0000 {0} ")]
+    [InlineData("{0}\\u0000\\u0000")]
+    public async Task A_tenant_name_containing_u0000_is_400_and_creates_no_tenant(string nameTemplate)
+    {
+        // The marker makes the name findable, whatever a faulty implementation would have stored of it.
+        var marker = "nul-" + Guid.CreateVersion7().ToString("N");
+        var body = "{\"name\":\"" + nameTemplate.Replace("{0}", marker) + "\"}";
+
+        using var response = await _client.PostAsync("/api/v1/tenants", Json(body), Ct);
+
+        await response.AssertProblemAsync(HttpStatusCode.BadRequest);
+        await using var connection = await api.Database.AppDataSource.OpenConnectionAsync(Ct);
+        Assert.Equal(0, await connection.ExecuteScalarAsync<long>("SELECT count(*) FROM tenants WHERE position(@marker in name) > 0", new { marker }));
+    }
+
+    [Fact]
+    public async Task A_tenant_name_of_only_u0000_is_400()
+    {
+        using var response = await _client.PostAsync("/api/v1/tenants", Json("""{"name":"\u0000"}"""), Ct);
+
+        await response.AssertProblemAsync(HttpStatusCode.BadRequest);
+    }
+
+    [Theory]
     [InlineData("application/json", HttpStatusCode.Created)]
     [InlineData("APPLICATION/JSON", HttpStatusCode.Created)]
     [InlineData("application/json; charset=utf-8", HttpStatusCode.Created)]
@@ -344,6 +372,51 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
         using var stored = await _client.GetAsync($"/api/v1/ingestions/{batch.GetProperty("batchId").GetString()}", tenant);
         Assert.Equal(HttpStatusCode.OK, stored.StatusCode);
         Assert.Equal(text, await stored.Content.ReadAsStringAsync(Ct));
+    }
+
+    [Fact]
+    public async Task U0000_in_an_unknown_column_name_is_422_with_ufffd_in_column_and_is_stored_so()
+    {
+        var tenant = await api.NewTenantAsync(_client);
+
+        using var response = await _client.UploadAsync(
+            tenant, "employee_id,component,effective_from,amount,currency,gr\0ade, \0\0 ,\"no\0te\"\nE-1,BASE_SALARY,2026-01-01,1,EUR,a,b,c\n");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        var batch = await response.JsonAsync();
+        (int?, string?, string)[] expected =
+        [
+            (1, "gr�ade", "UNKNOWN_COLUMN"), (1, "��", "UNKNOWN_COLUMN"), (1, "no�te", "UNKNOWN_COLUMN"),
+        ];
+        Assert.Equal(expected, batch.Errors());
+        Assert.Equal(3, batch.GetProperty("errorCount").GetInt32());
+        Assert.Equal(0, batch.Rows().Total);
+        Assert.All(batch.GetProperty("errors").EnumerateArray(), e => Assert.DoesNotContain('\0', e.GetProperty("message").GetString()!));
+
+        using var stored = await _client.GetAsync($"/api/v1/ingestions/{batch.GetProperty("batchId").GetString()}", tenant);
+        Assert.Equal(HttpStatusCode.OK, stored.StatusCode);
+        Assert.Equal(expected, (await stored.JsonAsync()).Errors());
+    }
+
+    [Fact]
+    public async Task U0000_in_data_fields_is_422_with_field_errors_and_never_appears_in_the_batch()
+    {
+        var tenant = await api.NewTenantAsync(_client);
+
+        using var response = await _client.UploadAsync(
+            tenant, Header + "E\0-1,BASE\0_SALARY,2026-01-0\0,1\0,EU\0\nE-1,BONUS_TARGET_PCT,2026-01-01,1,\0\n\0\n");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        var text = await response.Content.ReadAsStringAsync(Ct);
+        Assert.DoesNotContain('\0', text);
+        Assert.DoesNotContain("\\u0000", text);
+        (int?, string?, string)[] expected =
+        [
+            (2, "employee_id", "INVALID_EMPLOYEE_ID"), (2, "component", "UNKNOWN_COMPONENT"), (2, "effective_from", "INVALID_DATE"),
+            (2, "amount", "INVALID_AMOUNT"), (2, "currency", "INVALID_CURRENCY"), (3, "currency", "CURRENCY_NOT_ALLOWED"),
+            (4, null, "MALFORMED_CSV"),
+        ];
+        Assert.Equal(expected, (await response.JsonAsync()).Errors());
     }
 
     [Fact]
