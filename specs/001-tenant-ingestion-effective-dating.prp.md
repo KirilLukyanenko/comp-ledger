@@ -2,8 +2,8 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Ready |
-| Version    | 2.0 |
+| Status     | Implemented |
+| Version    | 2.1 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-12 |
 | Depends on | none (first feature; includes the solution skeleton) |
@@ -311,7 +311,8 @@ comp-ledger/
 │   ├── 0001_tenants.sql
 │   ├── 0002_ingestion_batches.sql
 │   ├── 0003_compensation_values.sql
-│   └── 0004_row_level_security.sql
+│   ├── 0004_row_level_security.sql
+│   └── 0005_drop_compensation_value_foreign_keys.sql   # since 2.0
 ├── src/
 │   ├── CompLedger.Core/           # pure code, no I/O
 │   │   ├── Components.cs          # catalogue from 3.2
@@ -556,3 +557,4 @@ Recorded for every run: whether the first complete attempt passed all gates, how
 | 1.3     | 2026-11-12 | Resolved the 3 gaps found while aligning the holdout scenarios with 1.2 (still Draft). 3.6: a known path with the wrong method gives 405 with ProblemDetails and `Allow`, without a tenant check; tenant names are trimmed with the CSV whitespace set only; `POST /tenants` content type follows the ingestion rules with `application/json` |
 | 1.4     | 2026-11-13 | Resolved the 7 gaps the implementer agent reported in its first run (run `prp001-20261113T105317Z-5f082a87`, stopped at T1 by a harness misconfiguration before any code was built). 3.3: only a UTF-8 BOM is recognised, any other BOM gives `INVALID_ENCODING`; a blank or unparseable first record is `MALFORMED_CSV` at row 1, a header error. 3.4: `MALFORMED_CSV` can be a header error, with `column` `null`. 3.6: `POST /tenants` property names are case-insensitive; repeated `asOf` or `component` gives 400. 6.2: the tree matches the repository. 6.5: gotcha 11 rewritten for BOM handling; new gotchas 14 (NuGet audit, seen when the gates built that run's skeleton), 15 (repeated query parameters), 16 (`now()`). 7.1, 7.2: one apply time per batch from `clock_timestamp()` after the lock, used for `recorded_at` and `superseded_at`. 7.3: T4 checks `superseded_at >= recorded_at` |
 | 2.0     | 2026-11-13 | Major: changes the normative data model after 1.4 was implemented and merged (`786b8c2`). 6.4, 7.1: no foreign keys on `compensation_values`, because per-row checks took most of the 1M-row time (1.4 run `prp001-20261113T111951Z-b9d316a7`: 19.6 s and 19.8 s of FK checks against 4.3 s for the insert itself; CI: 34.4, 56.8 and 58.0 s for the whole upload against the 60 s budget). 3.4, 3.6: U+0000 in a tenant name is 400, in an unknown column name it becomes U+FFFD, never in `message` (1.4 returned 500 for the tenant name). 6.2: current state is the 1.4 implementation. 7.3: new tasks T7 (migration 0005) and T8 (U+0000). 10: two new anti-patterns. The 60 s budget is unchanged until a 2.0 CI run measures it |
+| 2.1     | 2026-11-13 | Wording only. 6.3: the target tree lists migration 0005 (reported by the 2.0 run `prp001-20261113T140059Z-27ccf838`). 2.0 is implemented and merged (`dd5db47`). First 2.0 measurement on CI (run 43441514618): 1M rows in 9.2 s, peak RSS 112.6 MiB; on 1.4 it was 34.4 to 58.0 s. Budgets kept as they are: 60 s now leaves a wide margin on a shared runner |
