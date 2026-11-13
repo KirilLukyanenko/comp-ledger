@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CompLedger.Api/CompLedger.Api.csproj" />
+    <Project Path="src/CompLedger.Core/CompLedger.Core.csproj" />
+    <Project Path="src/CompLedger.Infrastructure/CompLedger.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CompLedger.IntegrationTests/CompLedger.IntegrationTests.csproj" />
+    <Project Path="tests/CompLedger.UnitTests/CompLedger.UnitTests.csproj" />
+  </Folder>
+</Solution>
