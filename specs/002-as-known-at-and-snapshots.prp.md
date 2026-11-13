@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Draft |
-| Version    | 1.0 |
+| Version    | 1.1 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-13 |
 | Depends on | PRP-001 (2.1, implemented) |
@@ -37,9 +37,12 @@ The API answers "what was in effect on date D, **as the system knew it at instan
 **`knownAt`** (query parameter, and the snapshot's `knownAt`):
 
 - Format: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$` on the raw value, matched with `\A` and `\z` and ASCII classes only (PRP-001 3.3 Patterns). UTC only: the `T` and the `Z` are uppercase, and offsets such as `+01:00` are not accepted. At most 6 fractional digits (microseconds, PostgreSQL's precision).
-- It must be a real instant (so `2026-02-30T00:00:00Z` and hour `24` are invalid), from `1900-01-01T00:00:00Z` up to the request time (3.1), inclusive. A later instant is invalid: a batch applied after the request could still get an earlier apply time, so the answer could change.
+- It must be a real instant (so `2026-02-30T00:00:00Z`, hour `24` and second `60` are invalid: no leap seconds), from `1900-01-01T00:00:00Z` up to the request time (3.1), inclusive. A later instant is invalid: a batch applied after the request could still get an earlier apply time, so the answer could change.
 - Not trimmed. Empty (`knownAt=`) is invalid. Given more than once is invalid, even with equal values.
 - Any violation gives `400`.
+- Whether a differently cased parameter name (`KNOWNAT`) is the same parameter is not part of the contract, as for the PRP-001 parameters.
+
+**Other query parameters.** On every endpoint of this PRP, parameters it does not name are ignored, as in PRP-001 3.6. The snapshot read names `asOf` and `knownAt` only to refuse them (3.4 item 6); `component` is not one of its parameters and is ignored, as on the PRP-001 as-of endpoint. The snapshot list and the snapshot resource take no parameters and ignore all of them, `asOf` and `knownAt` included.
 
 **`asOf`** keeps the PRP-001 rules (3.6) everywhere it appears, including the snapshot body, where it is required.
 
@@ -51,18 +54,18 @@ The API answers "what was in effect on date D, **as the system knew it at instan
 
 - `name`: required string, trimmed with the CSV whitespace set (space, tab, CR, LF), then 1 to 200 UTF-16 code units. A name containing U+0000 gives `400`. Stored and returned trimmed.
 - `asOf`: required string, a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, not trimmed.
-- Property names match case-insensitively; unknown properties are ignored; a missing, `null` or non-string `name` or `asOf` gives `400`; malformed JSON gives `400`.
+- Property names match case-insensitively; unknown properties are ignored; a missing, `null` or non-string `name` or `asOf` gives `400`; malformed JSON gives `400`. A body with more than one property matching `name`, or more than one matching `asOf`, is not part of the contract, as for `POST /api/v1/tenants`.
 - The client does not choose `knownAt`: the service sets it (3.4).
 - Names are unique within a tenant, compared ordinally after trimming. A duplicate gives `409`. Two tenants may use the same name.
 
 **Path parameters.**
 
-- `snapshotId` must be a hyphenated UUID; anything else gives `404`, like `batchId` in PRP-001.
-- `employeeId` in any employee path, the PRP-001 ones included, that contains U+0000 gives `404`: no such employee can exist (PRP-001 3.3), and PostgreSQL cannot take the value.
+- `snapshotId` must be a UUID in the hyphenated 8-4-4-4-12 form. Hex digits match in either case: an uppercase id is the same snapshot. Any other spelling (braces, parentheses, 32 digits without hyphens, anything else) gives `404`. A malformed `snapshotId` is a failed lookup, not an unknown route: the tenant check (`401`) and query validation (`400`) come first, and a wrong method on `/api/v1/snapshots/{anything}` is `405`.
+- A request path containing `%00` (U+0000), on any endpoint, the PRP-001 ones included, is refused by the HTTP server (Kestrel) with `400` before the application sees it. There is no tenant check, the body and headers of that response are not part of the contract (it is not ProblemDetails), and nothing changes. The application does not try to handle or override this (6.5 #12). U+0000 in a query value does reach the application: in `knownAt`, `asOf` or `component` it is an ordinary invalid value (`400` ProblemDetails).
 
 ### 3.3 Error responses
 
-Every error is RFC 7807 `ProblemDetails`, as in PRP-001.
+Every error is RFC 7807 `ProblemDetails`, as in PRP-001, with the PRP-001 exceptions plus one: the server's `400` for a path containing `%00` (3.2).
 
 | Status | When |
 |--------|------|
@@ -77,7 +80,7 @@ Order of checks: tenant (`401`), then content type (`415`, POST only), then quer
 
 ### 3.4 Semantics
 
-1. **Without `knownAt`, nothing changes.** The PRP-001 as-of and history endpoints answer exactly as before. Their responses gain one field, `knownAt`, which is `null` when the parameter was not given.
+1. **Without `knownAt`, nothing changes.** The PRP-001 as-of and history endpoints answer exactly as before. Their responses gain one field, `knownAt`, which is `null` when the parameter was not given, and otherwise the requested instant written in the response format (3.5): `…:09Z` in, `…:09.000000Z` out.
 2. **With `knownAt`**, the as-of and history endpoints use the values known at `knownAt` (3.1). All PRP-001 rules about ordering, periods, `effectiveTo` and the `component` filter apply to that set.
 3. **Existence is also as known.** With `knownAt`, `404` means the employee had no values known at `knownAt`. `200` with empty `components` or `periods` means they had values known at `knownAt`, but none in effect on `asOf` (or none for that component).
 4. **Stable answers.** A request with `knownAt`, a snapshot read and a snapshot creation each **wait while a batch of the same tenant is being applied**: from the moment it takes its lock to its commit (PRP-001 3.5 item 4). They never wait while a batch is still being uploaded or validated. After the wait, every batch with an apply time at or before the instant has committed, and every later batch will get a later apply time, so the answer cannot change.
@@ -132,7 +135,7 @@ Starting budgets. The first CI run calibrates them; any change is recorded in th
 | Ingestion | PRP-001 3.7 budgets still hold with this PRP's new index: 1M rows in 60 s or less, the same memory budgets |
 | As-known-at latency | After the PRP-001 load gate's 1M-row file is ingested into a tenant, then corrected by a second upload of 100k rows, 200 sequential as-of requests with `knownAt` for different employees: p95 of the HTTP round trip 100 ms or less on a GitHub-hosted runner |
 | Snapshot creation | Independent of tenant size: with the 1M-row tenant above, `POST /api/v1/snapshots` p95 100 ms or less over 20 requests, when no batch is being applied |
-| Logging | One JSON log entry per created snapshot with `TenantId`, `SnapshotId`, `AsOf` (`yyyy-MM-dd`), `KnownAt` (the response format) and `DurationMs`, under `State` as in PRP-001 3.7. Reads log nothing of their own. Never log names together with values, or any amount |
+| Logging | One JSON log entry per created snapshot with `TenantId`, `SnapshotId`, `AsOf` (`yyyy-MM-dd`), `KnownAt` (the response format) and `DurationMs`, under `State` as in PRP-001 3.7. The application logs no snapshot name, no employee id and no amount. Refused creations (`400`, `409`, `415`) and all reads log no entry of their own. Framework logs (for example ASP.NET Core request logging) are outside this rule |
 
 ## 4. Acceptance examples (public)
 
@@ -235,6 +238,8 @@ tests/CompLedger.IntegrationTests/{KnownAt,Snapshot}Tests.cs
 9. **Migrations and `FORCE ROW LEVEL SECURITY`.** The backfill in `0006` runs as the table owner, and `FORCE` hides every row from the owner when no tenant is set. Wrap the backfill in `ALTER TABLE … NO FORCE ROW LEVEL SECURITY` and `… FORCE ROW LEVEL SECURITY`, in the same migration. Tests run migrations as a superuser, which bypasses row security, so they won't catch this unless a test runs the migrations as a non-superuser owner.
 10. **Backfill of `applied_at`.** For an `Applied` batch, use the `recorded_at` of a value it inserted; else the `superseded_at` of a value it superseded; else, when every row was unchanged, `completed_at`. That batch changed no value, so any instant during it gives the same answers.
 11. **A new index costs on insert.** Check the 1M-row ingestion against PRP-001 3.7 locally after adding it.
+12. **`%00` in the path never reaches the app, and tests don't show it.** Kestrel refuses it with `400` while decoding the request target. `WebApplicationFactory` / `TestServer` skip that parser, so an integration test would reach the handler and see something else. Don't write middleware or tests for it; 3.2 leaves it to the server.
+13. **`snapshotId` parsing.** Bind the segment as a string and use `Guid.TryParseExact(value, "D", out id)`, which accepts either case and nothing but the hyphenated form. `Guid.TryParse` and a `{snapshotId:guid}` route constraint accept braces, and the constraint turns a malformed id into an unknown route (no tenant check, no `405`).
 
 ## 7. Implementation blueprint
 
@@ -297,7 +302,7 @@ Without `knownAt`, keep the PRP-001 query on current rows and take no lock.
 |----|------|-----------|
 | T1 | Migration `0006`: `applied_at`, backfill, check constraint, index. The ingestor writes `applied_at`; the batch resource returns `appliedAt` | Integration tests: `appliedAt` equals the `recorded_at` of the batch's values; `null` for rejected batches; a test runs `0001`–`0006` as a non-superuser owner on data from two tenants and checks the backfill; PRP-001 tests still pass |
 | T2 | `KnownAt` in Core: parse and format (3.2, 3.5) | Unit tests for every rule in 3.2: format, offsets, case, 6 vs 7 digits, invalid dates, range ends, round trip of six-digit values |
-| T3 | `knownAt` on the as-of and history endpoints, shared lock, `knownAt` in responses, the U+0000 employee-path rule | Integration tests reproduce A1, A2, A5, A7 and 3.4 items 1 to 3, plus A8 for both tenants |
+| T3 | `knownAt` on the as-of and history endpoints, shared lock, `knownAt` in responses | Integration tests reproduce A1, A2, A5, A7 and 3.4 items 1 to 3, plus A8 for both tenants |
 | T4 | Migration `0007` and the snapshot endpoints, logging | Integration tests reproduce A3, A4, A6, the `409` race (two concurrent creations with one name: one `201`, one `409`), and one log entry per snapshot |
 | T5 | Measure | The PR description gives local numbers for the 3.6 budgets: 1M-row ingestion with the new index, as-known-at p95, snapshot creation p95 |
 
@@ -343,3 +348,4 @@ All PRP-001 tests must keep passing. Never weaken, skip or delete a test to make
 | Version | Date       | Change |
 |---------|------------|--------|
 | 1.0     | 2026-11-13 | First version (Draft) |
+| 1.1     | 2026-11-13 | Closes the 9 gaps found while writing the holdout scenarios. U+0000 in a path: replaced the `404` rule, which Kestrel makes impossible (it answers `400` before the app), with the server's `400` as a ProblemDetails exception (3.2, 3.3, 6.5 #12). No leap seconds in `knownAt`. `snapshotId`: hyphenated form only, either case, malformed is a lookup after `401`/`400`, `405` on wrong methods (6.5 #13). Other query parameters ignored on every new endpoint; `component` ignored on the snapshot read. Response `knownAt` echoes the request. Logging: no names, employee ids or amounts; refused creations log nothing; framework logs outside the rule. Duplicate body properties and parameter-name case are not part of the contract |
