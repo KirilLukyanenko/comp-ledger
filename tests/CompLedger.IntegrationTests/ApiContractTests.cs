@@ -331,7 +331,7 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
         Assert.Equal(7, parsedId.Version);
         Assert.Equal($"/api/v1/ingestions/{batchId}", response.Headers.Location?.OriginalString);
 
-        Assert.Equal(["batchId", "status", "receivedAt", "completedAt", "rows", "errorCount", "errors"], batch.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(["batchId", "status", "receivedAt", "completedAt", "appliedAt", "rows", "errorCount", "errors"], batch.EnumerateObject().Select(p => p.Name));
         Assert.Equal(["total", "inserted", "corrected", "unchanged"], batch.GetProperty("rows").EnumerateObject().Select(p => p.Name));
         Assert.Equal("Applied", batch.GetProperty("status").GetString());
         Assert.Equal(0, batch.GetProperty("errorCount").GetInt32());
