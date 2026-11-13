@@ -166,6 +166,7 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
     [InlineData("null")]
     [InlineData("{\"name\":\"Acme")] // malformed JSON
     [InlineData("{name:'Acme'}")]
+    [InlineData("{\"name\":\"Acme\\ud800\"}")] // an unpaired surrogate escape is not a valid JSON string
     [InlineData("")]
     public async Task Invalid_tenant_bodies_are_400(string body)
     {
@@ -252,6 +253,28 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
         Assert.Equal(0, await api.CountBatchesAsync(tenant));
         using var lookup = await _client.GetAsync(EmployeeUrl, tenant);
         Assert.Equal(HttpStatusCode.NotFound, lookup.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(256L * 1024 * 1024, HttpStatusCode.Created)]
+    [InlineData((256L * 1024 * 1024) + 1, HttpStatusCode.RequestEntityTooLarge)]
+    public async Task The_default_body_limit_is_256_mib(long declaredLength, HttpStatusCode expected)
+    {
+        // This factory does not set Ingestion:MaxBodyBytes. Only the declared length matters for this check, so the
+        // test declares it without sending that many bytes (the in-memory test server does not compare the two).
+        var tenant = await api.NewTenantAsync(_client);
+        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(A1));
+        content.Headers.TryAddWithoutValidation("Content-Type", "text/csv");
+        content.Headers.ContentLength = declaredLength;
+
+        using var response = await _client.SendAsync(HttpMethod.Post, "/api/v1/ingestions", tenant, content);
+
+        Assert.Equal(expected, response.StatusCode);
+        Assert.Equal(expected == HttpStatusCode.Created ? 1 : 0, await api.CountBatchesAsync(tenant));
+        if (expected != HttpStatusCode.Created)
+        {
+            await response.AssertProblemAsync(expected);
+        }
     }
 
     [Fact]

@@ -453,6 +453,19 @@ public sealed class PostgresIngestorTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task A_multi_byte_sequence_cut_off_at_the_end_of_the_file_is_invalid_encoding()
+    {
+        var tenant = await fixture.CreateTenantAsync();
+        byte[] bytes = [.. Encoding.UTF8.GetBytes(A1), 0xC3];
+
+        var batch = await IngestAsync(tenant, bytes);
+
+        Assert.Equal(BatchStatus.Rejected, batch.Status);
+        Assert.Equal([(null, null, ErrorCodes.InvalidEncoding)], Report(batch));
+        Assert.Empty(await ValuesAsync(tenant));
+    }
+
+    [Fact]
     public async Task Latin1_bytes_are_invalid_encoding()
     {
         var tenant = await fixture.CreateTenantAsync();
@@ -531,6 +544,31 @@ public sealed class PostgresIngestorTests(PostgresFixture fixture)
 
         release.SetResult();
         Assert.Equal(new BatchRows(3, 3, 0, 0), (await slow).Rows);
+    }
+
+    [Fact]
+    public async Task A_tenant_waiting_for_its_lock_does_not_hold_up_another_tenant()
+    {
+        var tenantA = await fixture.CreateTenantAsync("A");
+        var tenantB = await fixture.CreateTenantAsync("B");
+
+        // Hold tenant A's lock (the key from PRP-001 7.2) from outside, as a long-running batch of A would.
+        await using var holder = await fixture.AppDataSource.OpenConnectionAsync(Ct);
+        await using var holderTransaction = await holder.BeginTransactionAsync(Ct);
+        await holder.ExecuteAsync(
+            "SELECT pg_advisory_xact_lock(hashtextextended(@Tenant, 0))", new { Tenant = tenantA.ToString("D") }, holderTransaction);
+
+        var blocked = Task.Run(() => IngestAsync(tenantA, A1), Ct);
+
+        // B is applied while A is still waiting: the lock is per tenant, not global.
+        var other = await IngestAsync(tenantB, A1).WaitAsync(TimeSpan.FromSeconds(30), Ct);
+        Assert.Equal(new BatchRows(3, 3, 0, 0), other.Rows);
+        await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        Assert.False(blocked.IsCompleted, "A batch of tenant A must wait for tenant A's lock.");
+        Assert.Empty(await ValuesAsync(tenantA));
+
+        await holderTransaction.CommitAsync(Ct);
+        Assert.Equal(new BatchRows(3, 3, 0, 0), (await blocked.WaitAsync(TimeSpan.FromSeconds(30), Ct)).Rows);
     }
 
     [Fact]

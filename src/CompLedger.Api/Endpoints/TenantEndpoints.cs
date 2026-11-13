@@ -27,8 +27,9 @@ public static class TenantEndpoints
             using var document = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
             name = ReadName(document.RootElement);
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
+            // InvalidOperationException: a string that cannot be decoded, such as an unpaired surrogate escape.
             return RequestChecks.Problem(StatusCodes.Status400BadRequest, "The body is not valid JSON.");
         }
 
