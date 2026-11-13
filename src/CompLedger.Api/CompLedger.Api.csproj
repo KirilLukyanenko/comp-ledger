@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <!-- Workstation GC keeps the resident set small and flat; the memory budget in PRP-001 3.7 is per process. -->
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CompLedger.Core\CompLedger.Core.csproj" />
+    <ProjectReference Include="..\CompLedger.Infrastructure\CompLedger.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>
