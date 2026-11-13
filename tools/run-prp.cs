@@ -12,6 +12,7 @@
 //   --replay <file>          don't call Claude Code; use a saved `claude -p --output-format json` result.
 //                            For testing this tool. The worktree and branch are removed afterwards.
 //   --runs-file <path>       write the record here instead of metrics/runs.jsonl
+//   --skip-trust-check       don't require the repository to be trusted in Claude Code (e.g. CI with its own settings)
 //
 // Environment:
 //   CLAUDE_BIN      path to the Claude Code CLI (default: "claude" on PATH)
@@ -42,12 +43,31 @@ if (specs.Length != 1)
     Console.Error.WriteLine($"expected exactly one spec matching specs/{opt.Prp}-*.prp.md, found {specs.Length}");
     return 2;
 }
-var specText = File.ReadAllText(specs[0]);
+// The agent's worktree is cut from HEAD, so the spec it reads is the committed one. Read the same text here,
+// and refuse uncommitted spec edits, so the version in the record is the version the agent saw.
+if (opt.Replay is null && Proc.Git(repo, "status", "--porcelain", "--", "specs").Trim().Length > 0)
+{
+    Console.Error.WriteLine("specs/ has uncommitted changes. Commit them first: the agent only sees committed specs.");
+    return 2;
+}
+var specText = Proc.Git(repo, "show", $"HEAD:specs/{Path.GetFileName(specs[0])}");
 var status = Spec.Field(specText, "Status");
 var version = Spec.Field(specText, "Version");
 if (status != "Ready" && !opt.AllowDraft)
 {
     Console.Error.WriteLine($"PRP-{opt.Prp} status is '{status}', not 'Ready'. Use --allow-draft to run anyway.");
+    return 2;
+}
+
+// Claude Code ignores the project's permissions.allow list in a folder that has never been trusted,
+// so a headless run can't build or commit anything. Fail here instead of wasting an attempt.
+if (opt.Replay is null && !opt.SkipTrustCheck && !Trust.IsTrusted(repo, out var trustReason))
+{
+    Console.Error.WriteLine($"""
+        {trustReason}
+        Claude Code would ignore .claude/settings.json allow rules, and the agent could not build or commit.
+        Run `claude` once in {repo}, accept the trust dialog, then /exit. Or pass --skip-trust-check.
+        """);
     return 2;
 }
 
@@ -117,6 +137,8 @@ var record = new JsonObject
     ["finishedAt"] = finishedAt.ToString("O"),
     ["model"] = opt.Model,
     ["agent"] = Agent.Summarize(agentJson),
+    ["untrustedWorkspace"] = File.Exists(Path.Combine(runDir, "claude-stderr.log"))
+        && File.ReadAllText(Path.Combine(runDir, "claude-stderr.log")).Contains("has not been trusted"),
     ["gates"] = gates,
     ["humanInterventions"] = 0,
 };
@@ -143,7 +165,7 @@ else
 }
 return 0;
 
-record Options(string Prp, string? Model, string? MaxTurns, string? MaxBudgetUsd, bool AllowDraft, string? Replay, string? RunsFile)
+record Options(string Prp, string? Model, string? MaxTurns, string? MaxBudgetUsd, bool AllowDraft, string? Replay, string? RunsFile, bool SkipTrustCheck)
 {
     public static Options? Parse(string[] a)
     {
@@ -154,7 +176,32 @@ record Options(string Prp, string? Model, string? MaxTurns, string? MaxBudgetUsd
             return i >= 0 && i + 1 < a.Length ? a[i + 1] : null;
         }
         return new Options(a[0], Value("--model"), Value("--max-turns"), Value("--max-budget-usd"),
-            a.Contains("--allow-draft"), Value("--replay"), Value("--runs-file"));
+            a.Contains("--allow-draft"), Value("--replay"), Value("--runs-file"), a.Contains("--skip-trust-check"));
+    }
+}
+
+static class Trust
+{
+    // Claude Code keeps per-folder trust in ~/.claude.json (or $CLAUDE_CONFIG_DIR/.claude.json):
+    // "projects": { "C:/path/to/repo": { "hasTrustDialogAccepted": true } }. Worktrees use the main repo's entry.
+    public static bool IsTrusted(string repo, out string reason)
+    {
+        var dir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR")
+            ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var file = Path.Combine(dir, ".claude.json");
+        if (!File.Exists(file)) { reason = $"{file} not found: Claude Code has never run here."; return false; }
+
+        JsonNode? projects;
+        try { projects = JsonNode.Parse(File.ReadAllText(file))?["projects"]; }
+        catch (JsonException) { reason = $"could not parse {file}"; return false; }
+
+        var key = repo.Replace('\\', '/').TrimEnd('/');
+        var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var entry = (projects as JsonObject)?.FirstOrDefault(p => string.Equals(p.Key.TrimEnd('/'), key, cmp)).Value;
+        if (entry?["hasTrustDialogAccepted"]?.GetValue<bool>() == true) { reason = ""; return true; }
+
+        reason = $"{repo} is not trusted in Claude Code.";
+        return false;
     }
 }
 
