@@ -55,6 +55,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: app
+          fetch-depth: 0
+
+      # A PRP's holdout scenarios and load tests run once its implementation has started: when this
+      # commit's history has an implementer commit "PRP-NNN Tn: ..." (the format every PRP fixes in
+      # its task table). Before that they would fail for the wrong reason.
+      - name: PRPs with an implementation
+        id: prps
+        working-directory: app
+        shell: bash
+        run: |
+          list=$(git log --format=%s | sed -nE 's/^PRP-([0-9]{3}) T[0-9]+:.*/\1/p' | sort -u | tr '\n' ' ')
+          echo "PRPs with implementer commits: ${list:-none}"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
 
       # Built before the scenarios are on disk, and from app/ only, so nothing in this commit's
       # Dockerfile or build can read them.
@@ -81,13 +94,25 @@ jobs:
         shell: bash
         env:
           COMP_LEDGER_IMAGE: comp-ledger:ci
+          PRPS: ${{ steps.prps.outputs.list }}
         run: |
           set +e
-          dotnet test --project scenarios/prp-001 --no-ansi --no-progress > "$RUNNER_TEMP/scenarios.log" 2>&1
-          code=$?
-          # Filtering the output must never decide the result; the test exit code does.
-          grep -E "^\s*(total|failed|succeeded|skipped):" "$RUNNER_TEMP/scenarios.log" > "$RUNNER_TEMP/scenarios.summary"
-          grep -E "^\s*failed CompLedgerHoldout\." "$RUNNER_TEMP/scenarios.log" | sed -E 's/^\s*failed //; s/ \([0-9.]+m?s\)$//' > "$RUNNER_TEMP/scenarios.failed"
+          code=0
+          : > "$RUNNER_TEMP/scenarios.summary"; : > "$RUNNER_TEMP/scenarios.failed"
+          for dir in scenarios/prp-*/; do
+            n=$(basename "$dir" | sed 's/^prp-//')
+            if [[ " $PRPS " != *" $n "* ]]; then
+              echo "prp-$n: not run, no implementer commits yet" >> "$RUNNER_TEMP/scenarios.summary"
+              continue
+            fi
+            log="$RUNNER_TEMP/scenarios-$n.log"
+            dotnet test --project "$dir" --no-ansi --no-progress > "$log" 2>&1
+            c=$?; [ $c -ne 0 ] && code=$c
+            # Filtering the output must never decide the result; the test exit codes do.
+            echo "prp-$n:" >> "$RUNNER_TEMP/scenarios.summary"
+            grep -E "^\s*(total|failed|succeeded|skipped):" "$log" >> "$RUNNER_TEMP/scenarios.summary"
+            grep -E "^\s*failed CompLedgerHoldout\." "$log" | sed -E 's/^\s*failed //; s/ \([0-9.]+m?s\)$//' >> "$RUNNER_TEMP/scenarios.failed"
+          done
           cat "$RUNNER_TEMP/scenarios.summary" "$RUNNER_TEMP/scenarios.failed"
           exit $code
 
@@ -97,11 +122,23 @@ jobs:
         shell: bash
         env:
           COMP_LEDGER_IMAGE: comp-ledger:ci
+          PRPS: ${{ steps.prps.outputs.list }}
         run: |
           set +e
-          dotnet test --project load --output Detailed --no-ansi --no-progress > "$RUNNER_TEMP/load.log" 2>&1
+          # Load tests of a PRP live in a class named ...PrpNNN...LoadGateTests; PRP-001's in S3_7_LoadGateTests.
+          skip=()
+          for f in load/*Prp[0-9][0-9][0-9]*LoadGateTests.cs; do
+            [ -e "$f" ] || continue
+            cls=$(basename "$f" .cs); n=$(echo "$cls" | sed -nE 's/.*Prp([0-9]{3}).*/\1/p')
+            if [[ " $PRPS " != *" $n "* ]]; then
+              skip+=(--filter-not-class "CompLedgerHoldout.Load.$cls")
+              echo "PRP-$n load tests: not run, no implementer commits yet" >> "$RUNNER_TEMP/load.skipped"
+            fi
+          done
+          dotnet test --project load --output Detailed --no-ansi --no-progress "${skip[@]}" > "$RUNNER_TEMP/load.log" 2>&1
           code=$?
-          grep -E "^\s*(Small|Large):" "$RUNNER_TEMP/load.log" | sort -u > "$RUNNER_TEMP/load.summary"
+          cat "$RUNNER_TEMP/load.skipped" > "$RUNNER_TEMP/load.summary" 2>/dev/null
+          grep -E "^\s*(Budgets|Ingest small|Ingest large|Correction upload|As-known-at as-of|Snapshot creation):" "$RUNNER_TEMP/load.log" | sed -E 's/^\s+//' | sort -u >> "$RUNNER_TEMP/load.summary"
           grep -E "^\s*(passed|failed) CompLedgerHoldout\.|^\s*(total|failed|succeeded):" "$RUNNER_TEMP/load.log" | sed -E 's/ \([0-9.]+m?s\)$//' >> "$RUNNER_TEMP/load.summary"
           cat "$RUNNER_TEMP/load.summary"
           exit $code
@@ -118,7 +155,7 @@ jobs:
             if [ -s "$RUNNER_TEMP/scenarios.failed" ]; then
               echo "Failed:"; sed 's/^/- /' "$RUNNER_TEMP/scenarios.failed"
             fi
-            echo "### Load gate (budgets from PRP 3.7, measured on this runner)"
+            echo "### Load gate (budgets from each PRP's non-functional section, measured on this runner)"
             echo '```'
             cat "$RUNNER_TEMP/load.summary" 2>/dev/null || echo "not run"
             echo '```'
