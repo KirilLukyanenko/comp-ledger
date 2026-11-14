@@ -152,7 +152,7 @@ public sealed class CapturedLogs : ILoggerProvider
 {
     private readonly ConcurrentQueue<Entry> _entries = new();
 
-    public sealed record Entry(string Category, LogLevel Level, string Message, IReadOnlyList<KeyValuePair<string, object?>> State);
+    public sealed record Entry(string Category, LogLevel Level, string Message, IReadOnlyList<KeyValuePair<string, object?>> State, Exception? Exception = null);
 
     public IReadOnlyCollection<Entry> Entries => _entries;
 
@@ -172,7 +172,7 @@ public sealed class CapturedLogs : ILoggerProvider
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             var values = state as IReadOnlyList<KeyValuePair<string, object?>> ?? [];
-            entries.Enqueue(new Entry(category, logLevel, formatter(state, exception), [.. values]));
+            entries.Enqueue(new Entry(category, logLevel, formatter(state, exception), [.. values], exception));
         }
     }
 }

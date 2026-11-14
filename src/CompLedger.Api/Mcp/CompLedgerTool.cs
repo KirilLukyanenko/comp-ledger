@@ -134,6 +134,7 @@ internal sealed class CompLedgerTool : McpServerTool
 
         OperationResult result;
         CallToolResult toolResult;
+        string? exceptionType = null;
         try
         {
             var arguments = ToolArguments.Bind(_arguments, request.Params?.Arguments);
@@ -145,16 +146,22 @@ internal sealed class CompLedgerTool : McpServerTool
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // The endpoint's 500: nothing of the exception reaches the client (the SDK would send its message).
+            // The log keeps only the exception's type (PRP-005 3.6).
+            exceptionType = ex.GetType().FullName ?? ex.GetType().Name;
             result = OperationResult.Problem(StatusCodes.Status500InternalServerError, null);
             toolResult = ToToolResult(result, httpContext, services);
         }
 
-        McpLogging.LogToolCall(
-            services.GetRequiredService<ILoggerFactory>().CreateLogger(McpLogging.Category),
-            ProtocolTool.Name,
-            tenantId.ToString("D"),
-            result.Status,
-            stopwatch.ElapsedMilliseconds);
+        var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger(McpLogging.Category);
+        if (exceptionType is null)
+        {
+            McpLogging.LogToolCall(logger, ProtocolTool.Name, tenantId.ToString("D"), result.Status, stopwatch.ElapsedMilliseconds);
+        }
+        else
+        {
+            McpLogging.LogToolCallFailed(logger, ProtocolTool.Name, tenantId.ToString("D"), result.Status, stopwatch.ElapsedMilliseconds, exceptionType);
+        }
+
         return toolResult;
     }
 

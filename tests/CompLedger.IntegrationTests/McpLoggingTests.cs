@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text;
+using Dapper;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 
 namespace CompLedger.IntegrationTests;
 
@@ -172,6 +174,81 @@ public sealed class McpLoggingTests(ApiFactory api) : IClassFixture<ApiFactory>
         Assert.Equal(14, EntriesOf(tenant, McpCategory).Count);
         Assert.DoesNotContain(application, e => e.Category.StartsWith("ModelContextProtocol", StringComparison.Ordinal) && e.Level < LogLevel.Warning);
         Assert.Single(EntriesOf(tenant, SnapshotCategory));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(McpTestSupport.OldRevision)]
+    public async Task A_tool_500_writes_one_Error_entry_with_the_exception_type_and_nothing_else_of_the_exception(string? revision)
+    {
+        var tenant = await api.NewTenantAsync(_client);
+        await _client.AppliedAtAsync(tenant, ApiFactory.A1);
+        await using var mcp = await api.ConnectMcpAsync(tenant, revision);
+
+        // A snapshot whose instant is in the future cannot be created through the API; reading through it throws
+        // inside the tool, after the tenant is resolved (6.5 #14).
+        var broken = Guid.NewGuid();
+        await using (var connection = await api.Database.AppDataSource.OpenConnectionAsync(Ct))
+        await using (var transaction = await connection.BeginTransactionAsync(Ct))
+        {
+            var tenantText = tenant.ToString("D");
+            await connection.ExecuteAsync("SELECT set_config('app.tenant_id', @tenantText, true)", new { tenantText }, transaction);
+            await connection.ExecuteAsync(
+                "INSERT INTO snapshots (id, tenant_id, name, as_of, known_at) VALUES (@broken, @tenant, 'From the future', DATE '2026-03-31', now() + interval '1 day')",
+                new { broken, tenant },
+                transaction);
+            await transaction.CommitAsync(Ct);
+        }
+
+        // The message the thrown exception carries (SnapshotOperations): it must reach no log line.
+        const string ExceptionMessage = "later than the database clock";
+        const string ExpectedType = "System.InvalidOperationException";
+
+        // Other tests of this class share the log (the SDK warns with a stack trace about an unknown tool): only the
+        // entries written from here on are this test's.
+        var before = api.Logs.Entries.Count;
+
+        (await mcp.CallAsync("get_compensation", """{"employeeId": "E-1001"}""")).AssertSuccess();
+        var failed = await mcp.CallAsync("get_snapshot_compensation", McpTestSupport.Arguments(("snapshotId", broken.ToString()), ("employeeId", "E-1001")));
+        (await mcp.CallAsync("get_compensation", """{"employeeId": "E-9999"}""")).AssertToolError(HttpStatusCode.NotFound);
+
+        // The 500 tool error of 3.4, which says nothing about the exception.
+        var problem = failed.AssertToolError(HttpStatusCode.InternalServerError);
+        var text = Assert.IsType<TextContentBlock>(Assert.Single(failed.Content)).Text;
+        Assert.Equal(problem.GetRawText(), text);
+        Assert.DoesNotContain(ExceptionMessage, text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Exception", text, StringComparison.OrdinalIgnoreCase);
+
+        // One entry per call, in order: Information, Error with ExceptionType, Information.
+        var entries = EntriesOf(tenant, McpCategory);
+        Assert.Equal(3, entries.Count);
+
+        var success = State(entries[0]);
+        Assert.Equal(LogLevel.Information, entries[0].Level);
+        Assert.Equal(200, Assert.IsType<int>(success["Status"]));
+        Assert.DoesNotContain("ExceptionType", success.Keys);
+
+        var error = State(entries[1]);
+        Assert.Equal(LogLevel.Error, entries[1].Level);
+        Assert.Equal(["DurationMs", "ExceptionType", "Status", "TenantId", "Tool"], error.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal("get_snapshot_compensation", Assert.IsType<string>(error["Tool"]));
+        Assert.Equal(tenant.ToString("D"), Assert.IsType<string>(error["TenantId"]));
+        Assert.Equal(500, Assert.IsType<int>(error["Status"]));
+        Assert.Equal(ExpectedType, Assert.IsType<string>(error["ExceptionType"]));
+        Assert.InRange(Assert.IsType<long>(error["DurationMs"]), 0L, 60_000L);
+        Assert.Null(entries[1].Exception);
+
+        var notFound = State(entries[2]);
+        Assert.Equal(LogLevel.Information, entries[2].Level);
+        Assert.Equal(404, Assert.IsType<int>(notFound["Status"]));
+        Assert.DoesNotContain("ExceptionType", notFound.Keys);
+
+        // Neither the message nor a stack trace in any log line, of any category, nor an exception attached to one.
+        var mine = api.Logs.Entries.Skip(before).ToList();
+        var everything = string.Join('\n', mine.Select(e => $"{Text(e)} {e.Exception}"));
+        Assert.DoesNotContain(ExceptionMessage, everything, StringComparison.Ordinal);
+        Assert.DoesNotContain("   at ", everything, StringComparison.Ordinal);
+        Assert.DoesNotContain(mine, e => e.Exception is not null);
     }
 
     [Fact]
