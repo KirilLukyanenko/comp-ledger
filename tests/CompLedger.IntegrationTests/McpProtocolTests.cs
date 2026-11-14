@@ -379,28 +379,42 @@ public sealed class McpProtocolTests(ApiFactory api) : IClassFixture<ApiFactory>
     {
         var tenant = await api.NewTenantAsync(_client);
 
-        // An unpaired surrogate escape: the JSON grammar allows it, .NET cannot decode it.
-        var arguments = ValidArguments(tool).ToDictionary(a => a.Key, a => JsonSerializer.Serialize(a.Value));
-        arguments[argument] = "\"\\ud800\"";
-        var argumentsJson = "{" + string.Join(",", arguments.Select(a => $"{JsonSerializer.Serialize(a.Key)}:{a.Value}")) + "}";
-
         var meta = revision == McpTestSupport.NewRevision
             ? ""","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"}}"""
             : string.Empty;
-        var body = $$$"""{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"{{{tool}}}","arguments":{{{argumentsJson}}}{{{meta}}}}}""";
         (string Name, string Value)[] headers = revision == McpTestSupport.NewRevision
             ? [("MCP-Protocol-Version", revision), ("Mcp-Method", "tools/call"), ("Mcp-Name", tool)]
             : [];
 
-        using var response = await _client.PostMcpAsync(body, tenant.ToString(), headers);
+        string Body(string value)
+        {
+            var arguments = ValidArguments(tool).ToDictionary(a => a.Key, a => JsonSerializer.Serialize(a.Value));
+            arguments[argument] = value;
+            var argumentsJson = "{" + string.Join(",", arguments.Select(a => $"{JsonSerializer.Serialize(a.Key)}:{a.Value}")) + "}";
+            return $$$"""{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"{{{tool}}}","arguments":{{{argumentsJson}}}{{{meta}}}}}""";
+        }
+
+        // Control: the same hand-built request with a decodable value is a tool result, so the error below comes from
+        // the undecodable value and not from the shape of the request.
+        using (var control = await _client.PostMcpAsync(Body("\"x\""), tenant.ToString(), headers))
+        {
+            var answered = Assert.NotNull(await control.JsonRpcAsync());
+            Assert.True(answered.TryGetProperty("result", out _), answered.GetRawText());
+        }
+
+        var logged = api.Logs.Entries.Count(e => e.Category == "CompLedger.Mcp" && e.State.Any(p => p.Key == "TenantId" && Equals(p.Value, tenant.ToString("D"))));
+        Assert.Equal(1, logged);
+
+        // An unpaired surrogate escape: the JSON grammar allows it, .NET cannot decode it.
+        using var response = await _client.PostMcpAsync(Body("\"\\ud800\""), tenant.ToString(), headers);
 
         Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
         var message = Assert.NotNull(await response.JsonRpcAsync());
         Assert.True(message.TryGetProperty("error", out _), message.GetRawText());
         Assert.False(message.TryGetProperty("result", out _), message.GetRawText());
-        Assert.DoesNotContain(
-            api.Logs.Entries,
-            e => e.Category == "CompLedger.Mcp" && e.State.Any(p => p.Key == "TenantId" && Equals(p.Value, tenant.ToString("D"))));
+
+        // Still only the control call's entry: the protocol error wrote none.
+        Assert.Equal(1, api.Logs.Entries.Count(e => e.Category == "CompLedger.Mcp" && e.State.Any(p => p.Key == "TenantId" && Equals(p.Value, tenant.ToString("D")))));
     }
 
     // ---------- SDK log levels (6.5 #6) ----------
