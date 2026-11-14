@@ -138,7 +138,7 @@ jobs:
           dotnet test --project load --output Detailed --no-ansi --no-progress "${skip[@]}" > "$RUNNER_TEMP/load.log" 2>&1
           code=$?
           cat "$RUNNER_TEMP/load.skipped" > "$RUNNER_TEMP/load.summary" 2>/dev/null
-          grep -E "^\s*(Budgets|Ingest small|Ingest large|Correction upload|As-known-at as-of|Snapshot creation):" "$RUNNER_TEMP/load.log" | sed -E 's/^\s+//' | sort -u >> "$RUNNER_TEMP/load.summary"
+          grep -E "^\s*(Budgets|Ingest small|Ingest large|Correction upload|As-known-at as-of|Snapshot creation|MCP get_compensation):" "$RUNNER_TEMP/load.log" | sed -E 's/^\s+//' | sort -u >> "$RUNNER_TEMP/load.summary"
           grep -E "^\s*(passed|failed) CompLedgerHoldout\.|^\s*(total|failed|succeeded):" "$RUNNER_TEMP/load.log" | sed -E 's/ \([0-9.]+m?s\)$//' >> "$RUNNER_TEMP/load.summary"
           cat "$RUNNER_TEMP/load.summary"
           exit $code
