@@ -286,6 +286,8 @@ public sealed class McpReadToolTests(ApiFactory api) : IClassFixture<ApiFactory>
         { "get_ingestion", """{"batchId": "<BATCH>"}""", 200 },
         { "get_ingestion", """{"batchId": "<rejected>"}""", 200 },
         { "get_ingestion", """{"batchId": "<batch>", "employeeId": 7}""", 200 },
+        { "get_ingestion", """{"batchId": " <batch>"}""", 200 },
+        { "get_ingestion", """{"batchId": "<batch> "}""", 200 },
         { "get_ingestion", """{"batchId": "<random>"}""", 404 },
         { "get_ingestion", """{"batchId": "not-a-uuid"}""", 404 },
         { "get_ingestion", """{"batchId": "{<batch>}"}""", 404 },

@@ -133,20 +133,22 @@ internal sealed class CompLedgerTool : McpServerTool
         var stopwatch = Stopwatch.StartNew();
 
         OperationResult result;
+        CallToolResult toolResult;
         try
         {
             var arguments = ToolArguments.Bind(_arguments, request.Params?.Arguments);
             result = arguments.Error is { } detail
                 ? OperationResult.Problem(StatusCodes.Status400BadRequest, detail)
                 : await _handler(services, tenantId, arguments, cancellationToken);
+            toolResult = ToToolResult(result, httpContext, services);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // The endpoint's 500: nothing of the exception reaches the client (the SDK would send its message).
             result = OperationResult.Problem(StatusCodes.Status500InternalServerError, null);
+            toolResult = ToToolResult(result, httpContext, services);
         }
 
-        var toolResult = ToToolResult(result, httpContext, services);
         McpLogging.LogToolCall(
             services.GetRequiredService<ILoggerFactory>().CreateLogger(McpLogging.Category),
             ProtocolTool.Name,

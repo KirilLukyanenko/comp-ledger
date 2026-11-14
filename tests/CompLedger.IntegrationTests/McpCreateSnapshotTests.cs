@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Dapper;
 
 namespace CompLedger.IntegrationTests;
 
@@ -170,6 +171,39 @@ public sealed class McpCreateSnapshotTests(ApiFactory api) : IClassFixture<ApiFa
         var created = await mcp.CallAsync("create_snapshot", Arguments(" " + new string('n', 200) + " ", "2026-03-31"));
 
         Assert.Equal(200, created.AssertSuccess().GetProperty("name").GetString()!.Length);
+    }
+
+    [Fact]
+    public async Task create_snapshot_waits_for_a_batch_being_applied_and_is_taken_after_it()
+    {
+        var tenant = await api.NewTenantAsync(_client);
+        var other = await api.NewTenantAsync(_client);
+        var applied = await _client.AppliedAtAsync(tenant, Row("50000"));
+        await using var mcp = await api.ConnectMcpAsync(tenant);
+        await using var mcpOther = await api.ConnectMcpAsync(other);
+
+        // A batch of the tenant being applied (PRP-002 3.4 item 4): its exclusive lock, held until the test commits.
+        await using var applying = await api.Database.AppDataSource.OpenConnectionAsync(Ct);
+        await using var transaction = await applying.BeginTransactionAsync(Ct);
+        var tenantText = tenant.ToString("D");
+        await applying.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@tenantText, 0))", new { tenantText }, transaction);
+
+        var waiting = mcp.CallAsync("create_snapshot", Arguments("During a batch", "2026-03-31"));
+
+        // Another tenant is not held up, and a refused value is refused without waiting.
+        (await mcpOther.CallAsync("create_snapshot", Arguments("During a batch", "2026-03-31")).WaitAsync(TimeSpan.FromSeconds(20), Ct)).AssertSuccess();
+        (await mcp.CallAsync("create_snapshot", Arguments("During a batch", "bad")).WaitAsync(TimeSpan.FromSeconds(20), Ct)).AssertToolError(HttpStatusCode.BadRequest);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(700), Ct);
+        Assert.False(waiting.IsCompleted, "create_snapshot must wait for the batch being applied.");
+
+        var committedAfter = await Instants.DatabaseNowAsync(api.Database);
+        await transaction.CommitAsync(Ct);
+
+        var snapshot = (await waiting.WaitAsync(TimeSpan.FromSeconds(20), Ct)).AssertSuccess();
+        var knownAt = snapshot.GetProperty("knownAt").GetString();
+        Assert.True(string.CompareOrdinal(knownAt, committedAfter) > 0, "The snapshot's instant is read after the wait.");
+        Assert.True(string.CompareOrdinal(knownAt, applied) > 0);
     }
 
     private static async Task AssertSameProblemAsync(HttpStatusCode expected, HttpResponseMessage response, ModelContextProtocol.Protocol.CallToolResult result)
