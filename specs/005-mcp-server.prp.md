@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Draft |
-| Version    | 1.0 |
+| Version    | 1.1 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-13 |
 | Depends on | PRP-001 (2.1, implemented), PRP-002 (1.3, implemented) |
@@ -33,20 +33,22 @@ The service speaks the **Model Context Protocol** (MCP) as well as REST. An MCP 
 
 ### 3.2 Inputs and validation
 
-**Tenant.** Every HTTP request to `/mcp`, whatever its method and whatever JSON-RPC message it carries (`initialize`, `tools/list`, `tools/call`, notifications), needs the `X-Tenant-Id` header with exactly the PRP-001 3.6 rules. Without a valid tenant the HTTP response is `401` with ProblemDetails, before any MCP processing. The tenant of a tool call is the tenant of the HTTP request that carries it.
+**Tenant.** Every HTTP request to `/mcp`, whatever its method and whatever JSON-RPC message it carries (`initialize`, `server/discover`, `tools/list`, `tools/call`, notifications), needs the `X-Tenant-Id` header with exactly the PRP-001 3.6 rules. Without a valid tenant the HTTP response is `401` with ProblemDetails, before any MCP processing. The tenant of a tool call is the tenant of the HTTP request that carries it.
 
 **Arguments.** Every tool argument is a JSON string. The input schema of every tool says `"type": "string"` for every property, lists the required ones in `required`, and allows no other types.
 
 - A string argument is used **exactly** as the value of its path segment or query parameter: not trimmed, not decoded, not normalised. The validation rules of the endpoint (PRP-001 3.6, PRP-002 3.2) then apply unchanged. So `knownAt: " 2026-11-13T10:00:00Z"` is `400`, as `?knownAt=%202026-11-13T10:00:00Z` is.
 - An optional argument that is absent or JSON `null` is a parameter that was not given. An empty string is a parameter given empty (`asOf: ""` is `400`, as `?asOf=` is).
 - A required argument that is absent or `null`, or any argument whose value is not a JSON string (number, boolean, object, array), gives a tool error with status `400`.
-- Argument names are case-sensitive and must match 3.3 exactly. Arguments a tool does not name are ignored, as unknown query parameters are.
+- Argument names are case-sensitive and must match 3.3 exactly. Arguments a tool does not name are ignored, as unknown query parameters are, whatever the kind of their value (`{"employeeId": "E-1", "page": 2}` is a valid call).
 - An arguments object with the same key twice is not part of the contract. The endpoints' "given more than once" rule has no tool equivalent.
 
 **Path arguments.** `employeeId`, `snapshotId` and `batchId` take the place of a path segment, but there is no URL, so any string can arrive.
 
-- `employeeId`: a value that is not a valid employee id under PRP-001 3.3 (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) can't have values, so the lookup gives `404` after the other checks, without a database query. That includes values containing U+0000, `/`, or whitespace.
-- `snapshotId`, `batchId`: the PRP-001 and PRP-002 rules (hyphenated UUID, either case for `snapshotId`; anything else `404`).
+- `employeeId`: a value that is not a valid employee id under PRP-001 3.3 (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) can't have values, so it gives `404` **at the lookup step**: after every other check, including the PRP-002 check that `knownAt` is not later than the request time (which still takes the lock and reads the database clock). The invalid value itself is never sent to PostgreSQL. That includes values containing U+0000, `/`, or whitespace, and the empty string.
+- `snapshotId`: the PRP-002 rules (hyphenated UUID, either case; anything else, the empty string included, `404`).
+- `batchId`: the tool answers what `GET /api/v1/ingestions/{batchId}` answers for the same spelling. Values that can't travel in a URL path segment (the empty string, U+0000, `/`) give `404`.
+- An empty path argument is given, not absent, so it is never the `400` for a missing required argument.
 
 ### 3.3 Tools
 
@@ -61,7 +63,7 @@ The service speaks the **Model Context Protocol** (MCP) as well as REST. An MCP 
 | `create_snapshot` | `name*`, `asOf*` | `POST /api/v1/snapshots` with body `{"name": …, "asOf": …}` | not read-only, not destructive, not idempotent |
 
 - **Annotations.** Read-only tools: `readOnlyHint: true`. `create_snapshot`: `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false`. Every tool: `openWorldHint: false`.
-- **Titles and descriptions** are written for a language model: one sentence on what the tool answers, then the formats it expects (`yyyy-MM-dd` dates, UTC instants with `Z` and up to six fractional digits, case-sensitive component codes from PRP-001 3.2) and the main errors. Each argument has a description of its own. Descriptions are not part of the contract beyond being present and non-empty.
+- **Titles and descriptions** are written for a language model: one sentence on what the tool answers, then the formats it expects (`yyyy-MM-dd` dates, UTC instants with `Z` and up to six fractional digits, case-sensitive component codes from PRP-001 3.2) and the main errors. Every tool has a non-empty title (in the tool's `title` or in `annotations.title`, either is enough) and a non-empty description; every argument has a non-empty description. Their wording is not part of the contract.
 - `create_snapshot` builds the body from its two arguments, so the snapshot body rules of PRP-002 3.2 apply to their values, and the content-type rules don't arise.
 - **No other tools.** In particular, nothing uploads a CSV, creates a tenant or deletes anything (5).
 
@@ -81,14 +83,16 @@ The service speaks the **Model Context Protocol** (MCP) as well as REST. An MCP 
 - `content` holds exactly one `text` item with that same JSON.
 - An unexpected exception in a tool gives status `500`, as it would on the endpoint. Its text says nothing about the exception beyond what the endpoint's `500` says.
 
-**Equivalence.** For any tool call and its equivalent request, made for the same tenant on the same data, the status (`200`/`201` for success, else the ProblemDetails `status`) and the body or ProblemDetails `status`, `title` and `type` are equal. Waiting is equal too: a call with `knownAt`, `get_snapshot_compensation` and `create_snapshot` wait for a batch being applied exactly as PRP-002 3.4 item 4 says.
+**Equivalence.** For any tool call and its equivalent request, made for the same tenant on the same data, the status (`200`/`201` for success, else the ProblemDetails `status`) and the body or ProblemDetails `status`, `title` and `type` are equal. `detail` is not compared: it can carry per-request values, and for a wrong argument kind it comes from the tool's own check (3.2), which has no REST equivalent. Waiting is equal too: a call with `knownAt`, `get_snapshot_compensation` and `create_snapshot` wait for a batch being applied exactly as PRP-002 3.4 item 4 says.
 
 ### 3.5 MCP protocol
 
-- **`initialize`.** `serverInfo.name` is `comp-ledger`; `serverInfo.version` is the API's informational version (any non-empty string). Capabilities: `tools` only. No resources, prompts, completions, logging or sampling.
+- **Protocol revisions.** `/mcp` serves both revisions the SDK serves by default: **2026-07-28** (the SDK client's default: `server/discover`, then requests carrying their own `_meta` and the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` headers, no `initialize`) and **2025-06-18** (the `initialize` handshake). Every rule in this PRP holds in both, except where this section says otherwise. The server does not restrict or override the SDK's revision negotiation.
+- **Server info.** In both revisions (the `initialize` or the `server/discover` result) the server name is `comp-ledger` and the version is the API's informational version (any non-empty string).
+- **Capabilities.** `tools`, and none of resources, prompts, completions or sampling. Under 2025-06-18 the SDK always adds `logging` to the `initialize` result; that is accepted, and no custom handler is written to remove it. Under 2026-07-28 the capabilities are `tools` only.
 - **`tools/list`** returns exactly the seven tools of 3.3, with their input schemas and annotations, in one page (no `nextCursor`).
 - **Protocol errors**, answered as the SDK answers them (the codes are not part of the contract): unknown tool name, unknown method, malformed JSON-RPC. An unknown tool is never a tool error.
-- **HTTP.** `POST /mcp` carries messages. Other methods on `/mcp`, and the response media type (`application/json` or `text/event-stream`), are as the SDK answers them in stateless mode, after the tenant check; `/mcp` is excluded from the PRP-001 rule "known path, wrong method gives `405` with ProblemDetails". No `Mcp-Session-Id` is issued or required.
+- **HTTP.** `POST /mcp` carries messages, with the response media type (`application/json` or `text/event-stream`) the SDK chooses. Other methods on `/mcp` (`GET`, `PUT`, `DELETE`, …) are not part of the contract beyond two rules: the tenant check comes first (`401` without a valid tenant), and no tenant data and no `Mcp-Session-Id` is returned. `/mcp` is excluded from the PRP-001 rule "known path, wrong method gives `405` with ProblemDetails"; whatever status page the pipeline renders for those methods is accepted. No `Mcp-Session-Id` is issued or required for any request.
 - The REST API is unchanged: every PRP-001 and PRP-002 endpoint answers exactly as before.
 
 ### 3.6 Non-functional budgets and logging
@@ -97,7 +101,7 @@ The service speaks the **Model Context Protocol** (MCP) as well as REST. An MCP 
 |--------|--------|
 | Tool latency | On the PRP-002 load-gate tenant (1M rows plus a 100k correction), 200 sequential `get_compensation` calls with `knownAt` for different employees, over one HTTP connection: p95 of the HTTP round trip 100 ms or less on a GitHub-hosted runner |
 | Memory | The PRP-001 3.7 budgets still hold with the MCP endpoint mapped |
-| Logging | One JSON log entry per `tools/call` with `Tool` (the tool name), `TenantId`, `Status` (the integer status of 3.4) and `DurationMs`, under `State` as in PRP-001 3.7. No argument value, no employee id, no snapshot name and no amount, in this entry or in any entry of the MCP SDK. `create_snapshot` also writes the PRP-002 snapshot entry when it succeeds. Calls rejected before the tool runs (`401`, protocol errors) write no entry of their own. REST reads still log nothing of their own (PRP-002 3.6) |
+| Logging | One JSON log entry per `tools/call` with `Tool` (the tool name), `TenantId`, `Status` and `DurationMs`, under `State` as in PRP-001 3.7. `Status` is an integer: `201` for a successful `create_snapshot`, `200` for every other success, the ProblemDetails `status` for a tool error. No argument value in this entry or in any `ModelContextProtocol.*` entry; no employee id, snapshot name or amount in any application log line (framework categories as in PRP-002 3.6 excluded). Other entries may contain the same strings for their own reasons: the PRP-002 snapshot entry, which `create_snapshot` also writes on success, carries `SnapshotId` and `AsOf`. `initialize`, `server/discover`, `tools/list`, notifications, `401`s and protocol errors write no entry of their own. REST reads still log nothing of their own (PRP-002 3.6) |
 
 Log categories of the MCP SDK (`ModelContextProtocol.*`) are not framework logs under PRP-002 3.6: they count as the application's.
 
@@ -117,7 +121,7 @@ A separate holdout suite checks the same rules through `/mcp` and the REST API w
 
 **M6. Isolation.** With T2's header, `get_snapshot` for T1's snapshot id is a tool error with status `404`, and `list_snapshots` is empty.
 
-**M7. Tenant.** `POST /mcp` with an `initialize` message and no `X-Tenant-Id` gives HTTP `401` with ProblemDetails.
+**M7. Tenant.** `POST /mcp` with an `initialize` message, or with a `server/discover` message, and no `X-Tenant-Id` gives HTTP `401` with ProblemDetails.
 
 **M8. Unknown tool.** `tools/call` for `delete_snapshot` gives a JSON-RPC error, not a tool result.
 
@@ -136,7 +140,7 @@ A separate holdout suite checks the same rules through `/mcp` and the REST API w
 ### 6.1 Read first
 
 - `CLAUDE.md`, `specs/README.md`, **PRP-001 and PRP-002 in full**: every tool here is one of their endpoints.
-- MCP specification, tools and Streamable HTTP: https://modelcontextprotocol.io/specification/2025-06-18/server/tools and https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
+- MCP specification: https://modelcontextprotocol.io/specification, revisions 2026-07-28 and 2025-06-18 (tools, Streamable HTTP transport, lifecycle; 2026-07-28 replaces `initialize` with `server/discover`).
 - MCP C# SDK: https://github.com/modelcontextprotocol/csharp-sdk (packages `ModelContextProtocol.AspNetCore` for the server, `ModelContextProtocol` for the client in tests).
 
 ### 6.2 Current state of the repository
@@ -184,11 +188,12 @@ Names inside `src/` may differ if the shape is the same: shared handlers, a thin
 4. **The tenant middleware must cover `/mcp`** for every method, and run before `MapMcp`. Today it only runs for the REST tenant endpoints. A test sends `initialize` without the header and expects `401`.
 5. **JSON options differ.** The SDK serialises with its own `JsonSerializerOptions`. `structuredContent` must be byte-for-byte the REST body's JSON shape: camelCase, `InstantJsonConverter` for instants, the same null handling. Serialise the body with the API's options into a `JsonElement` / `JsonNode` and hand that to the result, rather than letting the SDK serialise a C# object.
 6. **SDK logging counts as application logging** (3.6). The SDK logs under `ModelContextProtocol.*`; at Information or Debug it may log method names or arguments. Set those categories to `Warning` in `appsettings.json`, and add a test that captures the log output of a tool call with a known employee id, snapshot name and amount and finds none of them.
-7. **`employeeId` with U+0000** reaches the tool (there is no Kestrel path parser on this route) and PostgreSQL rejects it with an exception. 3.2 makes any invalid id a `404` without a query; check the pattern first.
+7. **`employeeId` with U+0000** reaches the tool (there is no Kestrel path parser on this route), and PostgreSQL rejects it with an exception. 3.2 makes any invalid id a `404` at the lookup step: run every other check first, including the lock and the database clock for `knownAt`, then answer `404` instead of running the query. A future `knownAt` with an invalid id is therefore `400`, as on REST.
 8. **Unique violation on `create_snapshot`.** The `23505` → `409` mapping and the PRP-002 snapshot log entry must come from the shared handler, so the tool can't skip them.
 9. **The 405 rule.** The PRP-001 code answers wrong methods on known paths with `405` ProblemDetails. `/mcp` is excluded (3.5); make sure the existing method check doesn't swallow the SDK's `GET` or `DELETE` handling, or turn its answers into ProblemDetails.
 10. **Integration tests through the real protocol.** Use the `ModelContextProtocol` client against the `WebApplicationFactory` server (the client's HTTP transport accepts an `HttpClient`; pass one from the factory with the tenant header). Asserting on hand-built JSON-RPC is fine for `401` and protocol errors, not for tool results.
 11. **Refactoring endpoints into handlers must not change REST behaviour.** All 377 integration tests and the PRP-001/PRP-002 holdout suites must pass with no test edited in T1.
+12. **Two protocol revisions.** The 2.3.1 client speaks 2026-07-28 by default (`server/discover`, no `initialize`); older clients send `initialize`. Test both: one client with its default, one pinned to 2025-06-18. Don't set options that restrict the revisions, and don't fight the `logging` capability the SDK adds under 2025-06-18 (3.5).
 
 ## 7. Implementation blueprint
 
@@ -218,7 +223,7 @@ GET /api/v1/employees/{employeeId}/compensation   (unchanged behaviour)
 | #  | Task | Done when |
 |----|------|-----------|
 | T1 | Move the logic of the six read endpoints and snapshot creation into shared handlers; endpoints become thin | Every existing unit and integration test passes with no test file changed; no new behaviour |
-| T2 | Packages, `/mcp` (stateless Streamable HTTP), tenant check on `/mcp`, `initialize`, `tools/list` with the seven tools, argument kinds and schemas; SDK log levels | Integration tests: M1, M7, M8; every argument of every tool is `"type": "string"`; wrong kinds and missing required arguments give `400` tool errors (M4) |
+| T2 | Packages, `/mcp` (stateless Streamable HTTP), tenant check on `/mcp`, server info and capabilities in both revisions, `tools/list` with the seven tools, argument kinds and schemas; SDK log levels | Integration tests: M1, M7, M8 in both revisions; every argument of every tool is `"type": "string"`; wrong kinds and missing required arguments give `400` tool errors (M4) |
 | T3 | The six read tools on the shared handlers, results and tool errors as 3.4 | Integration tests: M2, M3, M6, plus equivalence tests that call each read tool and its REST endpoint on the same data and compare, for success and for each error status the endpoint can give |
 | T4 | `create_snapshot`, the per-call log entry, the SDK log check | Integration tests: M5; one log entry per `tools/call` with the four properties; no argument value, employee id, name or amount in any log line of a tool call; the snapshot entry on success |
 | T5 | Measure | The PR description gives local numbers for 3.6: tool latency p95 on a 1M-row tenant with a 100k correction, and the 1M-row ingestion memory with `/mcp` mapped |
@@ -265,3 +270,4 @@ All PRP-001 and PRP-002 tests must keep passing, and in T1 unchanged. Never weak
 | Version | Date       | Change |
 |---------|------------|--------|
 | 1.0     | 2026-11-13 | First version (Draft) |
+| 1.1     | 2026-11-14 | Closes the 12 gaps found while writing the holdout scenarios. Both protocol revisions the SDK serves (2026-07-28 with `server/discover`, 2025-06-18 with `initialize`); server info and capabilities in both, `logging` accepted under 2025-06-18 (3.5, 6.5 #12). Tenant check covers `server/discover`. Unknown arguments ignored whatever their kind; empty path arguments are `404`; `batchId` follows the REST spelling rules. An invalid `employeeId` is `404` at the lookup step, after the request-time check, never sent to PostgreSQL. Equivalence compares `status`, `title`, `type`, not `detail`. Tool titles in either place. Log `Status` 201 for a created snapshot; which strings may appear in which entries; no entries for `initialize`, `server/discover`, `tools/list` or notifications. Other HTTP methods on `/mcp`: only the tenant check and no session are fixed |
