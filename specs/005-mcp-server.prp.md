@@ -2,8 +2,8 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Implemented |
-| Version    | 1.3 |
+| Status     | Draft |
+| Version    | 2.0 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-13 |
 | Depends on | PRP-001 (2.1, implemented), PRP-002 (1.3, implemented) |
@@ -101,7 +101,7 @@ The service speaks the **Model Context Protocol** (MCP) as well as REST. An MCP 
 |--------|--------|
 | Tool latency | On the PRP-002 load-gate tenant (1M rows plus a 100k correction), 200 sequential `get_compensation` calls with `knownAt` for different employees, over one HTTP connection: p95 of the HTTP round trip 100 ms or less on a GitHub-hosted runner |
 | Memory | The PRP-001 3.7 budgets still hold with the MCP endpoint mapped |
-| Logging | One JSON log entry per `tools/call` with `Tool` (the tool name), `TenantId`, `Status` and `DurationMs`, under `State` as in PRP-001 3.7. `Status` is an integer: `201` for a successful `create_snapshot`, `200` for every other success, the ProblemDetails `status` for a tool error. No argument value in this entry or in any `ModelContextProtocol.*` entry; no employee id, snapshot name or amount in any application log line (framework categories as in PRP-002 3.6 excluded). Other entries may contain the same strings for their own reasons: the PRP-002 snapshot entry, which `create_snapshot` also writes on success, carries `SnapshotId` and `AsOf`. `initialize`, `server/discover`, `tools/list`, notifications, `401`s and protocol errors write no entry of their own. REST reads still log nothing of their own (PRP-002 3.6). A tool `500` leaves `Status: 500` in this entry as its only trace; the exception itself is not logged (open for the owner, see the changelog for 1.3) |
+| Logging | One JSON log entry per `tools/call` with `Tool` (the tool name), `TenantId`, `Status` and `DurationMs`, under `State` as in PRP-001 3.7. `Status` is an integer: `201` for a successful `create_snapshot`, `200` for every other success, the ProblemDetails `status` for a tool error. No argument value in this entry or in any `ModelContextProtocol.*` entry; no employee id, snapshot name or amount in any application log line (framework categories as in PRP-002 3.6 excluded). Other entries may contain the same strings for their own reasons: the PRP-002 snapshot entry, which `create_snapshot` also writes on success, carries `SnapshotId` and `AsOf`. `initialize`, `server/discover`, `tools/list`, notifications, `401`s and protocol errors write no entry of their own. REST reads still log nothing of their own (PRP-002 3.6). **Since 2.0:** a tool `500` (an exception caught inside the tool, 6.5 #2) writes its per-call entry at level `Error`, with one more property under `State`: `ExceptionType`, the `Type.FullName` of the caught exception (for example `Npgsql.PostgresException`). Only the type: never the exception's message, stack trace or inner exceptions, because messages can quote argument values (PostgreSQL error texts do). It stays one entry per call; the `500` writes no second one. Every other per-call entry stays at `Information` and has no `ExceptionType` |
 
 Log categories of the MCP SDK (`ModelContextProtocol.*`) are not framework logs under PRP-002 3.6: they count as the application's.
 
@@ -144,6 +144,8 @@ A separate holdout suite checks the same rules through `/mcp` and the REST API w
 - MCP C# SDK: https://github.com/modelcontextprotocol/csharp-sdk (packages `ModelContextProtocol.AspNetCore` for the server, `ModelContextProtocol` for the client in tests).
 
 ### 6.2 Current state of the repository
+
+**Since 2.0.** PRP-005 1.3 is implemented and merged (`c0f935f`): 247 unit and 650 integration tests. The MCP code is in `src/CompLedger.Api/Mcp/`: `CompLedgerTool.cs` catches a tool's exception and turns it into the `500` result, `McpLogging.cs` holds the per-call entry. A run against version 2.0 changes this code; it does not start again. Only task T6 in 7.3 is new. The text below describes the repository before 1.3.
 
 PRP-001 2.1 and PRP-002 1.3 are implemented on `main`: migrations `0001` to `0007`, 228 unit and 377 integration tests. The relevant parts:
 
@@ -195,6 +197,7 @@ Names inside `src/` may differ if the shape is the same: shared handlers, a thin
 11. **Refactoring endpoints into handlers must not change REST behaviour.** All 377 integration tests and the PRP-001/PRP-002 holdout suites must pass with no test edited in T1.
 12. **Two protocol revisions.** The 2.3.1 client speaks 2026-07-28 by default (`server/discover`, no `initialize`); older clients send `initialize`. Test both: one client with its default, one pinned to 2025-06-18. Don't set options that restrict the revisions, and don't fight the `logging` capability the SDK adds under 2025-06-18 (3.5).
 13. **SDK behaviours seen in the 2.3.1 implementation, not chosen by this service.** Under 2026-07-28 an unknown method comes back as HTTP `404` carrying the JSON-RPC error, which the SDK client reports as a failed HTTP request rather than a protocol exception; under 2025-06-18 it is a protocol exception. `server/discover` lists only `2026-07-28` in `supportedVersions`, although `initialize` with `2025-06-18` works. A hand-built 2026-07-28 request needs `_meta` with the protocol version, client capabilities and client info, or the SDK refuses it.
+14. **Making a tool fail on purpose (2.0).** Nothing in a normal call throws, and an unreachable database fails the tenant check before any tool runs. The 1.3 test `An_unexpected_exception_is_the_endpoints_500_and_says_nothing_about_the_exception` already reaches a tool `500` (a snapshot row inserted with a future `known_at`); reuse that, or another way that throws inside the tool after the tenant is resolved. To prove that no message leaks, make the failure carry a recognisable string in its message, or capture the message the exception had, and assert it appears in no log line.
 
 ## 7. Implementation blueprint
 
@@ -228,6 +231,9 @@ GET /api/v1/employees/{employeeId}/compensation   (unchanged behaviour)
 | T3 | The six read tools on the shared handlers, results and tool errors as 3.4 | Integration tests: M2, M3, M6, plus equivalence tests that call each read tool and its REST endpoint on the same data and compare, for success and for each error status the endpoint can give |
 | T4 | `create_snapshot`, the per-call log entry, the SDK log check | Integration tests: M5; one log entry per `tools/call` with the four properties; no argument value, employee id, name or amount in any log line of a tool call; the snapshot entry on success |
 | T5 | Measure | The PR description gives local numbers for 3.6: tool latency p95 on a 1M-row tenant with a 100k correction, and the 1M-row ingestion memory with `/mcp` mapped |
+| T6 | **2.0.** Log the exception type on a tool `500` (3.6) | Integration tests: a tool call that throws gives the `500` tool error of 3.4 and exactly one entry for the call, at level `Error`, with `Status` 500 and `ExceptionType` equal to the full name of the thrown type; the exception's message appears in no log line; a successful call and a `4xx` tool error still log one `Information` entry without `ExceptionType` |
+
+Tasks T1 to T5 are implemented (version 1.3). A run against version 2.0 does T6 only.
 
 ## 8. Validation loop
 
@@ -244,6 +250,7 @@ All PRP-001 and PRP-002 tests must keep passing, and in T1 unchanged. Never weak
 
 - [ ] Every rule in section 3 is implemented and covered by a test; M1 to M8 pass as integration tests.
 - [ ] All validation levels are green on a clean checkout; PRP-001 and PRP-002 tests green, none edited.
+- [ ] **2.0:** existing PRP-005 tests change only where they pin the old `500` log entry, and the PR description lists each such change.
 - [ ] No migration added; migrations `0001` to `0007` untouched.
 - [ ] No secrets, hostnames or credentials in the repository; no `.mcp.json` committed.
 - [ ] Nothing under `specs/`, `.claude/`, `.github/` or `metrics/` was changed, and `README.md` is unchanged.
@@ -274,3 +281,4 @@ All PRP-001 and PRP-002 tests must keep passing, and in T1 unchanged. Never weak
 | 1.1     | 2026-11-14 | Closes the 12 gaps found while writing the holdout scenarios. Both protocol revisions the SDK serves (2026-07-28 with `server/discover`, 2025-06-18 with `initialize`); server info and capabilities in both, `logging` accepted under 2025-06-18 (3.5, 6.5 #12). Tenant check covers `server/discover`. Unknown arguments ignored whatever their kind; empty path arguments are `404`; `batchId` follows the REST spelling rules. An invalid `employeeId` is `404` at the lookup step, after the request-time check, never sent to PostgreSQL. Equivalence compares `status`, `title`, `type`, not `detail`. Tool titles in either place. Log `Status` 201 for a created snapshot; which strings may appear in which entries; no entries for `initialize`, `server/discover`, `tools/list` or notifications. Other HTTP methods on `/mcp`: only the tenant check and no session are fixed |
 | 1.2     | 2026-11-14 | Closes the gap found while aligning the holdout scenarios with 1.1: under 2026-07-28 the server info sits in `_meta["io.modelcontextprotocol/serverInfo"]` of the `server/discover` result, as the SDK writes it (3.5). Status Ready: key decisions reviewed by the owner, holdout scenarios (36 methods, 270 cases) and the MCP load test written |
 | 1.3     | 2026-11-14 | Implemented: agent run `prp005-20261114T150902Z-4367eb00` (first attempt), merged in c0f935f; CI run 43622811879 on `main`: holdout scenarios 270/270 (PRP-001 509/509, PRP-002 360/360), load gate 9/9, MCP `get_compensation` p95 2.1 ms, 1M rows in 5.9 s with `/mcp` mapped, peak RSS 116.2 MiB. Wording from the agent's notes, no behaviour change: an undecodable string argument is `400` (3.2); argument names versus the case-insensitive REST snapshot body (3.2); which paths count as `/mcp` (3.5); the invalid-id lookup step now sits in the shared query, REST answers unchanged (6.5 #7); status code pages off for SDK requests (6.5 #9); SDK behaviours seen with 2.3.1 (6.5 #13). Open for the owner: a tool `500` leaves only `Status: 500` in its log entry and no exception; whether to log at least the exception type (3.6) |
+| 2.0     | 2026-11-14 | Major: changes logging behaviour after 1.3 was implemented and merged (`c0f935f`). Closes the question 1.3 left open for the owner: a tool `500` left only `Status: 500` in its entry, so a failure in production had no trace of its cause. Now that entry is at level `Error` and carries `ExceptionType`, the type's full name and nothing else from the exception (3.6). 6.2 and 6.5 #14 for a run on the existing code; new task T6; definition of done allows changing tests that pin the old `500` entry. Status Draft until the holdout scenarios are updated |
