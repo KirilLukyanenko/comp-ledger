@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using CompLedger.Infrastructure.Db;
+using Microsoft.AspNetCore.Diagnostics;
 
 namespace CompLedger.Api.Tenancy;
 
@@ -22,19 +23,32 @@ public static class TenantEndpointExtensions
 
 /// <summary>
 /// Resolves the tenant from <c>X-Tenant-Id</c> (a stand-in for real authentication) for the endpoints marked with
-/// <see cref="RequiresTenantMetadata"/>, and answers <c>401</c> when there is no known tenant. Other endpoints,
-/// unknown routes and wrong-method requests pass through untouched, whatever the header holds.
+/// <see cref="RequiresTenantMetadata"/> and for every request to <c>/mcp</c>, and answers <c>401</c> when there is no
+/// known tenant. Other endpoints, unknown routes and wrong-method requests pass through untouched, whatever the
+/// header holds.
 /// </summary>
 public sealed partial class TenantResolutionMiddleware(RequestDelegate next)
 {
     public const string HeaderName = "X-Tenant-Id";
 
+    /// <summary>Where the MCP server is mapped (PRP-005 3.1).</summary>
+    public const string McpPath = "/mcp";
+
     public async Task InvokeAsync(HttpContext context)
     {
-        if (context.GetEndpoint()?.Metadata.GetMetadata<RequiresTenantMetadata>() is null)
+        // /mcp needs the tenant for every method, mapped or not (PRP-005 3.2), so it is recognised by its path too.
+        var endpoint = context.GetEndpoint();
+        var isMcp = IsMcpPath(context.Request.Path);
+        if (endpoint?.Metadata.GetMetadata<RequiresTenantMetadata>() is null && !isMcp)
         {
             await next(context);
             return;
+        }
+
+        if (isMcp && endpoint is not null && context.Features.Get<IStatusCodePagesFeature>() is { } statusCodePages)
+        {
+            // What the MCP SDK answers stays as the SDK wrote it: no ProblemDetails page over a bodyless status.
+            statusCodePages.Enabled = false;
         }
 
         // Resolved only here, so requests that need no tenant (such as /health) never touch the database.
@@ -55,6 +69,10 @@ public sealed partial class TenantResolutionMiddleware(RequestDelegate next)
         await Results.Problem(statusCode: StatusCodes.Status401Unauthorized, detail: $"{HeaderName} must hold the id of a known tenant.")
             .ExecuteAsync(context);
     }
+
+    /// <summary>True for the MCP endpoint's path as routing matches it: any case, with or without a trailing slash.</summary>
+    private static bool IsMcpPath(PathString path) =>
+        path.StartsWithSegments(McpPath, StringComparison.OrdinalIgnoreCase, out var rest) && (!rest.HasValue || rest.Value == "/");
 
     [GeneratedRegex(@"\A[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\z", RegexOptions.CultureInvariant)]
     private static partial Regex HyphenatedUuid();
