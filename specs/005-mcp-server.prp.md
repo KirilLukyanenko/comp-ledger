@@ -2,8 +2,8 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Draft |
-| Version    | 1.1 |
+| Status     | Ready |
+| Version    | 1.2 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-13 |
 | Depends on | PRP-001 (2.1, implemented), PRP-002 (1.3, implemented) |
@@ -88,7 +88,7 @@ The service speaks the **Model Context Protocol** (MCP) as well as REST. An MCP 
 ### 3.5 MCP protocol
 
 - **Protocol revisions.** `/mcp` serves both revisions the SDK serves by default: **2026-07-28** (the SDK client's default: `server/discover`, then requests carrying their own `_meta` and the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` headers, no `initialize`) and **2025-06-18** (the `initialize` handshake). Every rule in this PRP holds in both, except where this section says otherwise. The server does not restrict or override the SDK's revision negotiation.
-- **Server info.** In both revisions (the `initialize` or the `server/discover` result) the server name is `comp-ledger` and the version is the API's informational version (any non-empty string).
+- **Server info.** In both revisions the server name is `comp-ledger` and the version is the API's informational version (any non-empty string), wherever the revision puts them: `serverInfo` in the `initialize` result, or `_meta["io.modelcontextprotocol/serverInfo"]` in the `server/discover` result, as the SDK writes it. The SDK client's `ServerInfo` shows the same values in both.
 - **Capabilities.** `tools`, and none of resources, prompts, completions or sampling. Under 2025-06-18 the SDK always adds `logging` to the `initialize` result; that is accepted, and no custom handler is written to remove it. Under 2026-07-28 the capabilities are `tools` only.
 - **`tools/list`** returns exactly the seven tools of 3.3, with their input schemas and annotations, in one page (no `nextCursor`).
 - **Protocol errors**, answered as the SDK answers them (the codes are not part of the contract): unknown tool name, unknown method, malformed JSON-RPC. An unknown tool is never a tool error.
@@ -271,3 +271,4 @@ All PRP-001 and PRP-002 tests must keep passing, and in T1 unchanged. Never weak
 |---------|------------|--------|
 | 1.0     | 2026-11-13 | First version (Draft) |
 | 1.1     | 2026-11-14 | Closes the 12 gaps found while writing the holdout scenarios. Both protocol revisions the SDK serves (2026-07-28 with `server/discover`, 2025-06-18 with `initialize`); server info and capabilities in both, `logging` accepted under 2025-06-18 (3.5, 6.5 #12). Tenant check covers `server/discover`. Unknown arguments ignored whatever their kind; empty path arguments are `404`; `batchId` follows the REST spelling rules. An invalid `employeeId` is `404` at the lookup step, after the request-time check, never sent to PostgreSQL. Equivalence compares `status`, `title`, `type`, not `detail`. Tool titles in either place. Log `Status` 201 for a created snapshot; which strings may appear in which entries; no entries for `initialize`, `server/discover`, `tools/list` or notifications. Other HTTP methods on `/mcp`: only the tenant check and no session are fixed |
+| 1.2     | 2026-11-14 | Closes the gap found while aligning the holdout scenarios with 1.1: under 2026-07-28 the server info sits in `_meta["io.modelcontextprotocol/serverInfo"]` of the `server/discover` result, as the SDK writes it (3.5). Status Ready: key decisions reviewed by the owner, holdout scenarios (36 methods, 270 cases) and the MCP load test written |
