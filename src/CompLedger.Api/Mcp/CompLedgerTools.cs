@@ -1,4 +1,5 @@
 using CompLedger.Api.Operations;
+using Microsoft.Extensions.Primitives;
 using ModelContextProtocol.Server;
 
 namespace CompLedger.Api.Mcp;
@@ -41,7 +42,8 @@ internal static class CompLedgerTools
                 new ToolArgument("asOf", Required: false, $"Optional. The date the values must be in effect on: {DateFormat}. Without it, today (UTC)."),
                 KnownAt,
             ],
-            NotYetAsync),
+            (services, tenantId, arguments, cancellationToken) => services.GetRequiredService<CompensationOperations>().GetAsOfAsync(
+                tenantId, arguments.Required("employeeId"), arguments.Optional("asOf"), arguments.Optional("knownAt"), cancellationToken)),
 
         new CompLedgerTool(
             "get_compensation_history",
@@ -54,7 +56,8 @@ internal static class CompLedgerTools
                 new ToolArgument("component", Required: false, "Optional. One exact, case-sensitive component code: BASE_SALARY, ALLOWANCE or BONUS_TARGET_PCT. Without it, all components."),
                 KnownAt,
             ],
-            NotYetAsync),
+            (services, tenantId, arguments, cancellationToken) => services.GetRequiredService<CompensationOperations>().GetHistoryAsync(
+                tenantId, arguments.Required("employeeId"), arguments.Optional("component"), arguments.Optional("knownAt"), cancellationToken)),
 
         new CompLedgerTool(
             "get_ingestion",
@@ -63,7 +66,8 @@ internal static class CompLedgerTools
             + "Status 404 as a tool error when the batch does not exist.",
             readOnly: true,
             [new ToolArgument("batchId", Required: true, "The batch id: a hyphenated UUID as returned when the file was uploaded.")],
-            NotYetAsync),
+            (services, tenantId, arguments, cancellationToken) =>
+                services.GetRequiredService<IngestionOperations>().GetAsync(tenantId, arguments.Required("batchId"), cancellationToken)),
 
         new CompLedgerTool(
             "list_snapshots",
@@ -71,7 +75,7 @@ internal static class CompLedgerTools
             "Returns every snapshot of the tenant: its id, name, as-of date (yyyy-MM-dd) and the UTC instant it was taken at. Takes no arguments.",
             readOnly: true,
             [],
-            NotYetAsync),
+            (services, tenantId, _, cancellationToken) => services.GetRequiredService<SnapshotOperations>().ListAsync(tenantId, cancellationToken)),
 
         new CompLedgerTool(
             "get_snapshot",
@@ -79,7 +83,8 @@ internal static class CompLedgerTools
             "Returns one snapshot: its id, name, as-of date (yyyy-MM-dd) and the UTC instant it was taken at. Status 404 as a tool error when it does not exist.",
             readOnly: true,
             [SnapshotId],
-            NotYetAsync),
+            (services, tenantId, arguments, cancellationToken) =>
+                services.GetRequiredService<SnapshotOperations>().GetAsync(tenantId, arguments.Required("snapshotId"), cancellationToken)),
 
         new CompLedgerTool(
             "get_snapshot_compensation",
@@ -88,7 +93,10 @@ internal static class CompLedgerTools
             + "Later corrections do not change the answer. Status 404 as a tool error when the snapshot does not exist or the employee had no values then.",
             readOnly: true,
             [SnapshotId, EmployeeId],
-            NotYetAsync),
+
+            // The tool has no asOf and no knownAt, so the equivalent request never carries the two refused parameters.
+            (services, tenantId, arguments, cancellationToken) => services.GetRequiredService<SnapshotOperations>().GetEmployeeAsync(
+                tenantId, arguments.Required("snapshotId"), arguments.Required("employeeId"), StringValues.Empty, StringValues.Empty, cancellationToken)),
 
         new CompLedgerTool(
             "create_snapshot",

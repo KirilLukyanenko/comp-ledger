@@ -1,4 +1,5 @@
 using System.Globalization;
+using CompLedger.Core.Ingestion;
 using CompLedger.Infrastructure.Db;
 using Dapper;
 using Npgsql;
@@ -98,6 +99,13 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
             {
                 return new CompensationResult(CompensationOutcome.KnownAtAfterRequestTime, []);
             }
+        }
+
+        if (!RowParser.IsEmployeeId(employeeId))
+        {
+            // The lookup step (PRP-005 3.2): an id that no stored value can have is not found, after every other
+            // check, and is never sent to PostgreSQL (which refuses U+0000 in a text value).
+            return new CompensationResult(CompensationOutcome.EmployeeNotFound, []);
         }
 
         var rows = (await scope.Connection.QueryAsync<PeriodRow>(new CommandDefinition(
