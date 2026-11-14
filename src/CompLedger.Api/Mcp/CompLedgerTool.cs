@@ -52,7 +52,9 @@ internal sealed class ToolArguments
                 }
                 catch (InvalidOperationException)
                 {
-                    // A string that cannot be decoded, such as an unpaired surrogate escape.
+                    // Defensive only: with SDK 2.3.1 a string that cannot be decoded (an unpaired surrogate escape)
+                    // fails while the SDK converts the request's params, before any tool runs, so it is a protocol
+                    // error (PRP-005 3.2, 3.5) and this branch is not reached.
                     arguments.Error ??= $"The argument {definition.Name} must be a JSON string.";
                     continue;
                 }
