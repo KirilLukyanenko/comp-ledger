@@ -7,4 +7,7 @@
     <ProjectReference Include="..\CompLedger.Core\CompLedger.Core.csproj" />
     <ProjectReference Include="..\CompLedger.Infrastructure\CompLedger.Infrastructure.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+  </ItemGroup>
 </Project>

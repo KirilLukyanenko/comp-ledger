@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using CompLedger.Api.Operations;
 using CompLedger.Api.Tenancy;
 using CompLedger.Infrastructure.Ingestion;
 using Microsoft.AspNetCore.Mvc;
@@ -69,17 +70,8 @@ public static partial class IngestionEndpoints
             : Results.Json(batch, statusCode: StatusCodes.Status422UnprocessableEntity);
     }
 
-    private static async Task<IResult> GetAsync(string batchId, HttpContext context, PostgresIngestor ingestor, CancellationToken cancellationToken)
-    {
-        // An id that is not a UUID cannot exist, and an id of another tenant must look the same as a missing one.
-        var batch = Guid.TryParseExact(batchId, "D", out var id)
-            ? await ingestor.FindBatchAsync(context.GetTenantId(), id, cancellationToken)
-            : null;
-
-        return batch is null
-            ? RequestChecks.Problem(StatusCodes.Status404NotFound, "The batch does not exist.")
-            : Results.Json(batch);
-    }
+    private static async Task<IResult> GetAsync(string batchId, HttpContext context, IngestionOperations operations, CancellationToken cancellationToken) =>
+        (await operations.GetAsync(context.GetTenantId(), batchId, cancellationToken)).ToHttpResult();
 
     private static IResult TooLarge(long maxBodyBytes) =>
         RequestChecks.Problem(StatusCodes.Status413PayloadTooLarge, $"The body is larger than {maxBodyBytes} bytes.");

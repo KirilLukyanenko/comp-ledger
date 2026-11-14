@@ -50,6 +50,9 @@ public sealed partial class RowParser(ErrorCollector errors)
     /// <summary>Removes the CSV whitespace set (space, tab, CR, LF) from both ends, and nothing else.</summary>
     public static string Trim(string value) => value.Trim(TrimChars);
 
+    /// <summary>True for a valid employee id (PRP-001 3.3), on the value as written: not trimmed.</summary>
+    public static bool IsEmployeeId(string value) => EmployeeIdPattern().IsMatch(value);
+
     /// <summary>Checks a <c>yyyy-MM-dd</c> value: format and real calendar date first, then the supported range.</summary>
     public static DateCheck CheckDate(string value, out DateOnly date)
     {
