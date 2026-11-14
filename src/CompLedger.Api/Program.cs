@@ -1,4 +1,5 @@
 using CompLedger.Api.Endpoints;
+using CompLedger.Api.Operations;
 using CompLedger.Api.Tenancy;
 using CompLedger.Infrastructure.Db;
 using CompLedger.Infrastructure.Ingestion;
@@ -20,6 +21,11 @@ builder.Services.AddSingleton<TenantStore>();
 builder.Services.AddSingleton<PostgresIngestor>();
 builder.Services.AddSingleton<CompensationQueries>();
 builder.Services.AddSingleton<SnapshotStore>();
+
+// One handler per operation, shared by the REST endpoints and the MCP tools.
+builder.Services.AddSingleton<CompensationOperations>();
+builder.Services.AddSingleton<IngestionOperations>();
+builder.Services.AddSingleton<SnapshotOperations>();
 
 var app = builder.Build();
 
