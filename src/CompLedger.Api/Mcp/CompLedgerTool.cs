@@ -130,6 +130,7 @@ internal sealed class CompLedgerTool : McpServerTool
         var httpContext = services.GetRequiredService<IHttpContextAccessor>().HttpContext
             ?? throw new InvalidOperationException("The tool call is not inside an HTTP request.");
         var tenantId = httpContext.GetTenantId();
+        var stopwatch = Stopwatch.StartNew();
 
         OperationResult result;
         try
@@ -145,7 +146,14 @@ internal sealed class CompLedgerTool : McpServerTool
             result = OperationResult.Problem(StatusCodes.Status500InternalServerError, null);
         }
 
-        return ToToolResult(result, httpContext, services);
+        var toolResult = ToToolResult(result, httpContext, services);
+        McpLogging.LogToolCall(
+            services.GetRequiredService<ILoggerFactory>().CreateLogger(McpLogging.Category),
+            ProtocolTool.Name,
+            tenantId.ToString("D"),
+            result.Status,
+            stopwatch.ElapsedMilliseconds);
+        return toolResult;
     }
 
     /// <summary>

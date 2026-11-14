@@ -108,9 +108,10 @@ internal static class CompLedgerTools
                 new ToolArgument("name", Required: true, "The snapshot's name: 1 to 200 characters after trimming spaces, unique within the tenant."),
                 new ToolArgument("asOf", Required: true, $"The as-of date of the snapshot: {DateFormat}."),
             ],
-            NotYetAsync),
-    ];
 
-    private static Task<OperationResult> NotYetAsync(IServiceProvider services, Guid tenantId, ToolArguments arguments, CancellationToken cancellationToken) =>
-        Task.FromResult(OperationResult.Problem(StatusCodes.Status501NotImplemented, null));
+            // The body of the equivalent request is built from the two arguments, so only its value rules apply. The
+            // name conflict (409) and the snapshot's log entry come from the handler.
+            (services, tenantId, arguments, cancellationToken) => services.GetRequiredService<SnapshotOperations>().CreateAsync(
+                tenantId, arguments.Required("name"), arguments.Required("asOf"), cancellationToken)),
+    ];
 }
