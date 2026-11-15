@@ -2,7 +2,7 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Draft |
+| Status     | Ready |
 | Version    | 1.1 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-15 |
@@ -316,4 +316,4 @@ All PRP-001, PRP-002, PRP-003 and PRP-005 tests must keep passing; only the A8 t
 | Version | Date       | Change |
 |---------|------------|--------|
 | 1.0     | 2026-11-15 | First version (Draft). Owner's decisions: CSV only; the export is the as-of view of all employees, now, as known at an instant, or through a snapshot; no computed fields in this PRP; the agent fixes the PRP-002 A8 test race as task T0 |
-| 1.1     | 2026-11-15 | Closes the 7 gaps found while writing the holdout scenarios. The throughput budget names an export that exists: on the PRP-002 3.6 tenant only one of each employee's two dated values per component is in effect on a date, so the export has about half of the 1M values (500,001 rows as of 2025-08-01); still 30 s. Export memory is measured in a restarted API process after a small warm-up export, because `VmHWM` would otherwise still hold the 1M-row upload's peak (3.6). The upload-during-export check names the PRP-001 100k-row tenant (3.6). A wrong method on `/api/v1/snapshots/{anything}/export` is `405`, also with a malformed id (3.3). No `Content-Length` for any size (3.5). The `Aborted` entry of a cancelled export is not checked from outside (11.5). The default `asOf` is the UTC date of the request, as in PRP-001 (3.2) |
+| 1.1     | 2026-11-15 | Closes the 7 gaps found while writing the holdout scenarios. The throughput budget names an export that exists: on the PRP-002 3.6 tenant only one of each employee's two dated values per component is in effect on a date, so the export has about half of the 1M values (500,001 rows as of 2025-08-01); still 30 s. Export memory is measured in a restarted API process after a small warm-up export, because `VmHWM` would otherwise still hold the 1M-row upload's peak (3.6). The upload-during-export check names the PRP-001 100k-row tenant (3.6). A wrong method on `/api/v1/snapshots/{anything}/export` is `405`, also with a malformed id (3.3). No `Content-Length` for any size (3.5). The `Aborted` entry of a cancelled export is not checked from outside (11.5). The default `asOf` is the UTC date of the request, as in PRP-001 (3.2). Status Ready: key decisions made by the owner; holdout scenarios written (27 methods, 97 cases) and the 3.6 load checks added, with export memory measured in a fresh API process on the same database. On the image of `main` without PRP-004 code, only the checks that need the export routes fail, and the PRP-001, PRP-002, PRP-003 and PRP-005 suites pass |
