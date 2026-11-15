@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Draft |
-| Version    | 1.0 |
+| Version    | 1.1 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-15 |
 | Depends on | PRP-001 (2.1, implemented), PRP-002 (1.3, implemented), PRP-003 (1.2, implemented: not in the export), PRP-005 (2.1, implemented: its tools must not change) |
@@ -33,7 +33,7 @@ A tenant can download, as one CSV file, every compensation value in effect on a 
 
 **`GET /api/v1/compensation/export`** names two query parameters:
 
-- `asOf`: optional, the PRP-001 rules (3.6): a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, not trimmed, empty is invalid. When absent, today (UTC), as on the PRP-001 as-of read.
+- `asOf`: optional, the PRP-001 rules (3.6): a real `yyyy-MM-dd` date from 1900-01-01 to 2999-12-31, not trimmed, empty is invalid. When absent, the UTC date of the request, as on the PRP-001 as-of read ("today", PRP-001 3.1).
 - `knownAt`: optional, the PRP-002 rules (3.2): format, real instant, from `1900-01-01T00:00:00Z` up to the request time inclusive, not trimmed, empty is invalid.
 - Either given more than once gives `400`, even with equal values. Any violation gives `400`.
 
@@ -55,6 +55,8 @@ Every error is RFC 7807 `ProblemDetails`, decided **before the first byte of the
 | `405` | Known path, wrong method (PRP-001 3.6 rule) |
 
 Order of checks: tenant (`401`), then query validation (`400`), then the snapshot lookup (`404`), then the wait and the `knownAt`-after-request-time check (`400`).
+
+`/api/v1/snapshots/{anything}/export` is a known path for any segment, as the PRP-002 snapshot paths are (PRP-002 3.2): a wrong method on it is `405` with `Allow: GET`, also when the segment is not a valid `snapshotId`.
 
 A tenant with no values, or none in effect on `asOf` as known at the instant, is `200` with the header line only. It is never `404`.
 
@@ -85,7 +87,7 @@ Base path and tenant resolution as in PRP-001 3.6.
 - `Content-Type: text/csv; charset=utf-8`.
 - `X-As-Of`: the export's `asOf`, `yyyy-MM-dd` (the default date when none was given; the snapshot's on a snapshot export).
 - `X-Known-At`: the export instant in the PRP-002 response format, UTC with exactly six fractional digits: `2026-11-15T14:22:31.123456Z`. A `knownAt` the client gave is echoed in that format (`…:09Z` in, `…:09.000000Z` out), as PRP-002 3.4 item 1 does.
-- No `Content-Length`: the length is not known in advance. Compression, `Content-Disposition`, `ETag` and caching headers are not part of the contract.
+- No `Content-Length`, whatever the size of the file, a header-only file included: the length is not known in advance. Compression, `Content-Disposition`, `ETag` and caching headers are not part of the contract.
 
 **File**, in UTF-8 without a BOM:
 
@@ -114,9 +116,9 @@ Starting budgets. The first CI run calibrates them; any change is recorded in th
 | Budget | Target |
 |--------|--------|
 | Existing budgets | PRP-001 3.7, PRP-002 3.6, PRP-003 3.7 and PRP-005 3.6 still hold. This PRP adds no index and no write |
-| Export throughput | On the PRP-002 3.6 tenant (the 1M-row file, then the 100k-row correction), one export of all 1M current values with `asOf` on which every value is in effect: from the request to the last byte received, 30 s or less on a GitHub-hosted runner, with the client reading as fast as it can |
-| Export memory | In the same container, the API process's `VmHWM` (PRP-001 3.7) read right after that export minus `VmHWM` read right before it: 64 MiB or less. Peak at any time: 300 MiB or less, as in PRP-001 3.7 |
-| Uploads during an export | While an export of a 100k-row tenant is open and its client has read only the first line, an upload of one row to the same tenant answers `201` within 10 s |
+| Export throughput | On the PRP-002 3.6 tenant (the 1M-row file, then the 100k-row correction), one export as of a date on which every employee's newest value of each component is in effect. The load gate's generator gives each employee and component two dated values, so that export has about half of the 1M values (500,001 rows as of 2025-08-01). From the request to the last byte received: 30 s or less on a GitHub-hosted runner, with the client reading as fast as it can |
+| Export memory | Measured in a fresh API process, as PRP-001 3.7 measures uploads. After the tenant above is set up, the API process is restarted; the database keeps its data. One small export (a tenant with a few rows) warms it up, then `VmHWM` (PRP-001 3.7) is read, then the large export above runs, then `VmHWM` is read again. Growth: 64 MiB or less. Peak: 300 MiB or less. Without the restart, `VmHWM` would still hold the 1M-row upload's peak and the growth would read 0 |
+| Uploads during an export | The PRP-001 3.7 100k-row tenant (the load gate's small run), exported as of a date on which its newest values are in effect. While that export is open and its client has read only the header line, an upload of one row to the same tenant answers `201` within 10 s |
 | Logging | One JSON log entry per export that sent a `200`, written when it ends, with `TenantId`, `SnapshotId` (the id, or `null` for an export without a snapshot), `AsOf` (`yyyy-MM-dd`), `KnownAt` (the response format), `Rows` (data rows written), `Outcome` (`"Completed"` or `"Aborted"`) and `DurationMs`, under `State` as in PRP-001 3.7. No employee id, component, date or amount of any row. Refused exports (`400`, `401`, `404`, `405`) log no entry of their own. Framework logs are outside this rule, as in PRP-002 3.6 |
 
 ## 4. Acceptance examples (public)
@@ -307,10 +309,11 @@ All PRP-001, PRP-002, PRP-003 and PRP-005 tests must keep passing; only the A8 t
 2. **Load gate** for 3.6: the 1M-row export time, `VmHWM` before and after it, and an upload during an open export; the existing budgets.
 3. **AI review against this PRP** on the pull request.
 4. All PRP-001, PRP-002, PRP-003 and PRP-005 holdout scenarios still run and must still pass.
-5. **Not checked by the holdout scenarios:** A8 (a black-box client cannot see the ingestor's lock) and the abort after the first byte (the scenarios cannot make the service fail mid-file). Both rest on the implementer's tests and review.
+5. **Not checked by the holdout scenarios:** A8 (a black-box client cannot see the ingestor's lock), the abort after the first byte (the scenarios cannot make the service fail mid-file), and the `Aborted` log entry of an export its client cancels (from outside, a client cannot tell how much of the file had already left the server into socket and proxy buffers, so the outcome is not fixed). They rest on the implementer's tests and review. The scenarios check `Completed` entries only.
 
 ## Changelog
 
 | Version | Date       | Change |
 |---------|------------|--------|
 | 1.0     | 2026-11-15 | First version (Draft). Owner's decisions: CSV only; the export is the as-of view of all employees, now, as known at an instant, or through a snapshot; no computed fields in this PRP; the agent fixes the PRP-002 A8 test race as task T0 |
+| 1.1     | 2026-11-15 | Closes the 7 gaps found while writing the holdout scenarios. The throughput budget names an export that exists: on the PRP-002 3.6 tenant only one of each employee's two dated values per component is in effect on a date, so the export has about half of the 1M values (500,001 rows as of 2025-08-01); still 30 s. Export memory is measured in a restarted API process after a small warm-up export, because `VmHWM` would otherwise still hold the 1M-row upload's peak (3.6). The upload-during-export check names the PRP-001 100k-row tenant (3.6). A wrong method on `/api/v1/snapshots/{anything}/export` is `405`, also with a malformed id (3.3). No `Content-Length` for any size (3.5). The `Aborted` entry of a cancelled export is not checked from outside (11.5). The default `asOf` is the UTC date of the request, as in PRP-001 (3.2) |
