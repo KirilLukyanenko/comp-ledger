@@ -42,8 +42,9 @@ internal static class CompLedgerTools
                 new ToolArgument("asOf", Required: false, $"Optional. The date the values must be in effect on: {DateFormat}. Without it, today (UTC)."),
                 KnownAt,
             ],
+            // include is not given: computed fields over MCP need their own PRP-005 version (PRP-003 3.5 item 8).
             (services, tenantId, arguments, cancellationToken) => services.GetRequiredService<CompensationOperations>().GetAsOfAsync(
-                tenantId, arguments.Required("employeeId"), arguments.Optional("asOf"), arguments.Optional("knownAt"), cancellationToken)),
+                tenantId, arguments.Required("employeeId"), arguments.Optional("asOf"), arguments.Optional("knownAt"), StringValues.Empty, cancellationToken)),
 
         new CompLedgerTool(
             "get_compensation_history",
@@ -95,8 +96,15 @@ internal static class CompLedgerTools
             [SnapshotId, EmployeeId],
 
             // The tool has no asOf and no knownAt, so the equivalent request never carries the two refused parameters.
+            // Nor include: computed fields over MCP need their own PRP-005 version (PRP-003 3.5 item 8).
             (services, tenantId, arguments, cancellationToken) => services.GetRequiredService<SnapshotOperations>().GetEmployeeAsync(
-                tenantId, arguments.Required("snapshotId"), arguments.Required("employeeId"), StringValues.Empty, StringValues.Empty, cancellationToken)),
+                tenantId,
+                arguments.Required("snapshotId"),
+                arguments.Required("employeeId"),
+                StringValues.Empty,
+                StringValues.Empty,
+                StringValues.Empty,
+                cancellationToken)),
 
         new CompLedgerTool(
             "create_snapshot",

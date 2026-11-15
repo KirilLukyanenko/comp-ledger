@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using CompLedger.Core;
 using CompLedger.Core.Ingestion;
 using CompLedger.Infrastructure.Queries;
@@ -15,8 +16,12 @@ public sealed class CompensationOperations(CompensationQueries queries)
     // request time is known only on the database clock, after the wait for a batch being applied; it is still decided
     // before the lookup.
 
+    /// <summary>
+    /// The as-of read. <paramref name="includeValues"/> is the PRP-003 <c>include</c> parameter; the MCP tool always
+    /// passes it as not given, so a tool never returns computed fields.
+    /// </summary>
     public async Task<OperationResult> GetAsOfAsync(
-        Guid tenantId, string employeeId, StringValues asOfValues, StringValues knownAtValues, CancellationToken cancellationToken)
+        Guid tenantId, string employeeId, StringValues asOfValues, StringValues knownAtValues, StringValues includeValues, CancellationToken cancellationToken)
     {
         DateOnly asOf;
         if (asOfValues.Count == 0)
@@ -34,12 +39,18 @@ public sealed class CompensationOperations(CompensationQueries queries)
             return InvalidKnownAt();
         }
 
-        var result = await queries.GetAsOfAsync(tenantId, employeeId, asOf, knownAt, cancellationToken);
+        if (!TryReadInclude(includeValues, out var withComputed))
+        {
+            return InvalidInclude();
+        }
+
+        var result = await queries.GetAsOfAsync(tenantId, employeeId, asOf, knownAt, withComputed, cancellationToken);
         return result.Outcome switch
         {
             CompensationOutcome.KnownAtAfterRequestTime => InvalidKnownAt(),
             CompensationOutcome.EmployeeNotFound => EmployeeNotFound(),
-            _ => OperationResult.Ok(new AsOfResponse(employeeId, asOf, FormatKnownAt(knownAt), result.Periods)),
+            _ => OperationResult.Ok(new AsOfResponse(
+                employeeId, asOf, FormatKnownAt(knownAt), result.Periods, withComputed ? Computed(asOf, result) : null)),
         };
     }
 
@@ -75,6 +86,26 @@ public sealed class CompensationOperations(CompensationQueries queries)
         OperationResult.Problem(StatusCodes.Status404NotFound, "The employee has no compensation values.");
 
     /// <summary>
+    /// Reads the optional <c>include</c> parameter (PRP-003 3.5 item 1): not given, or given once as exactly
+    /// <c>computed</c>. False for anything else, including an empty or repeated value.
+    /// </summary>
+    internal static bool TryReadInclude(StringValues values, out bool computed)
+    {
+        computed = values.Count == 1 && string.Equals(values[0], "computed", StringComparison.Ordinal);
+        return values.Count == 0 || computed;
+    }
+
+    internal static OperationResult InvalidInclude() =>
+        OperationResult.Problem(StatusCodes.Status400BadRequest, "include must be given at most once, as exactly the value computed.");
+
+    /// <summary>The computed fields of an as-of result that was read with the later ALLOWANCE (PRP-003 3.2 to 3.4).</summary>
+    internal static IReadOnlyList<ComputedField> Computed(DateOnly asOf, CompensationResult result) =>
+        ComputedFields.For(
+            asOf,
+            result.Periods.Select(p => new ComputedInput(p.Component, p.Amount, p.Currency, p.EffectiveFrom, p.EffectiveTo)),
+            result.NextAllowanceFrom);
+
+    /// <summary>
     /// Reads the optional <c>knownAt</c> parameter (PRP-002 3.2). False when it is given more than once, is empty or
     /// is not an accepted instant. The upper bound, the request time, is checked later on the database clock.
     /// </summary>
@@ -104,8 +135,16 @@ public sealed class CompensationOperations(CompensationQueries queries)
             "knownAt must be given at most once, as a UTC instant such as 2026-11-13T14:22:31.123456Z with at most six fractional digits, "
             + "from 1900-01-01T00:00:00Z up to the time of the request.");
 
-    /// <summary><see cref="KnownAt"/> is null when the parameter was not given, otherwise the requested instant.</summary>
-    private sealed record AsOfResponse(string EmployeeId, DateOnly AsOf, string? KnownAt, IReadOnlyList<CompensationPeriod> Components);
+    /// <summary>
+    /// <see cref="KnownAt"/> is null when the parameter was not given, otherwise the requested instant.
+    /// <see cref="Computed"/> is left out entirely, not written as null, without <c>include=computed</c>.
+    /// </summary>
+    private sealed record AsOfResponse(
+        string EmployeeId,
+        DateOnly AsOf,
+        string? KnownAt,
+        IReadOnlyList<CompensationPeriod> Components,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ComputedField>? Computed);
 
     private sealed record HistoryResponse(string EmployeeId, string? KnownAt, IReadOnlyList<CompensationPeriod> Periods);
 }
