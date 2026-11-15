@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Ready |
-| Version    | 1.1 |
+| Version    | 1.2 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-15 |
 | Depends on | PRP-001 (2.1, implemented), PRP-002 (1.3, implemented), PRP-003 (1.2, implemented: not in the export), PRP-005 (2.1, implemented: its tools must not change) |
@@ -223,6 +223,7 @@ Parameter checks may live in a new `Operations/ExportOperations.cs` or in the en
 9. **A known-at boundary.** With `knownAt` equal to a batch's `appliedAt`, its values are in the export and the ones it superseded are not (PRP-002 6.5 #4). Reuse the `KnownAtInstant` filter of `CompensationQueries`.
 10. **The as-of default.** Without `asOf`, use the same "today (UTC)" as the PRP-001 as-of read, and return it in `X-As-Of`.
 11. **The A8 race (T0).** The PRP-002 test `A8_while_a_one_million_row_batch_is_applied_its_tenant_waits_and_another_tenant_answers_at_once` failed twice under load, once in run 6 and once in CI on `main` (run 43706843465, a commit that changed only documentation): the read got `404` instead of `200`. The service is right; the test races. It takes `now` from the database clock as soon as it sees the batch's exclusive lock, but the ingestor reads the batch's apply time (`clock_timestamp()`) in its next statement, after the lock. When that statement runs late, the apply time is after `now`, so the batch is not known at `now` and `404` is the correct answer. The assertion that would have said so, `appliedAt < now`, comes after the one that failed. Fix the test so that it takes `now` only after the apply time is fixed, for example by waiting until the lock holder's backend (`pg_locks.pid`, then `pg_stat_activity`) runs a statement after the apply-time statement. Keep every assertion; do not retry, do not accept `404`, do not change the service.
+12. **One fixture's logs are shared by all tests of a class (T5).** The test `Each_export_that_sent_a_200_writes_one_log_entry_with_ids_coordinates_and_a_count_only` passed in run 8 and failed in CI on `main` (run 43722022445): it joins **every** `CompLedger.Export` entry of the class's `ApiFactory` and forbids `2025-07-01`. Another test of the class exports as of `2025-07-01`, and its entry carries that date as its `AsOf`, which 3.6 requires. When that test runs first, the check fails; test order is not fixed, so it passed locally. The service is right. Read only the entries of the test's own tenant, as `ApplicationEntries(tenant)` already does; keep every forbidden value; do not drop values from the list, do not retry, do not change the service.
 
 ## 7. Implementation blueprint
 
@@ -267,6 +268,9 @@ GET /api/v1/compensation/export   (or /api/v1/snapshots/{id}/export)
 | T2 | `ExportQuery`: fix the instant (transaction 1), stream the rows (transaction 2) | Integration tests: the rows equal the as-of read for every employee (3.4 item 2) on data with corrections and back-dated values; ordinal order (A2); the known-at boundary (6.5 #9); the lock is not held while rows are read (an upload of the same tenant commits while a reader is open) |
 | T3 | The two endpoints: parameters, errors, headers, streaming, abort after the first byte, logging | Integration tests reproduce A1 to A8, every `400` and `404` case of 3.2 and 3.3 in the order of 3.3, one log entry per export with both outcomes, and no log entry for refused exports; all existing tests pass |
 | T4 | Measure | The PR description gives local numbers for 3.6: the 1M-row export time, `VmHWM` before and after it, and the upload time during an open export. A commit for this task may be empty; put the numbers in its message too |
+| T5 | Version 1.2: make the export logging test independent of the other tests (6.5 #12). Test code only | The check reads only the export entries of its own test's tenant and still forbids every value it forbids now; every other assertion in `tests/CompLedger.IntegrationTests` that searches log entries for forbidden values is checked for the same leak and fixed the same way; the integration suite passes 5 times in a row locally (say how you ran it); no file under `src/` changes |
+
+**Version 1.2 is a run of T5 only.** T0 to T4 are implemented on `main` (merge f5d1386). Do not redo them or change their code; the PR description covers T5 only.
 
 ## 8. Validation loop
 
@@ -277,13 +281,13 @@ dotnet test tests/CompLedger.UnitTests
 dotnet test tests/CompLedger.IntegrationTests
 ```
 
-All PRP-001, PRP-002, PRP-003 and PRP-005 tests must keep passing; only the A8 test changes, in T0. Never weaken, skip or delete a test to make a level pass. If this PRP looks wrong or contradicts an earlier PRP, stop and say so in the PR description.
+All PRP-001, PRP-002, PRP-003 and PRP-005 tests must keep passing; only the A8 test changes, in T0, and in 1.2 only the log assertions T5 names. Never weaken, skip or delete a test to make a level pass. If this PRP looks wrong or contradicts an earlier PRP, stop and say so in the PR description.
 
 ## 9. Definition of done
 
 - [ ] Every rule in section 3 is implemented and covered by a test; A1 to A8 pass as tests.
 - [ ] All validation levels are green on a clean checkout.
-- [ ] No existing test method changes, except the PRP-002 A8 test in T0, whose assertions all stay.
+- [ ] No existing test method changes, except the PRP-002 A8 test in T0 and, in 1.2, the log assertions in T5; their assertions all stay.
 - [ ] No migration is added and migrations `0001` to `0007` are untouched.
 - [ ] No secrets, hostnames or credentials in the repository.
 - [ ] Nothing under `specs/`, `.claude/`, `.github/` or `metrics/` was changed.
@@ -317,3 +321,4 @@ All PRP-001, PRP-002, PRP-003 and PRP-005 tests must keep passing; only the A8 t
 |---------|------------|--------|
 | 1.0     | 2026-11-15 | First version (Draft). Owner's decisions: CSV only; the export is the as-of view of all employees, now, as known at an instant, or through a snapshot; no computed fields in this PRP; the agent fixes the PRP-002 A8 test race as task T0 |
 | 1.1     | 2026-11-15 | Closes the 7 gaps found while writing the holdout scenarios. The throughput budget names an export that exists: on the PRP-002 3.6 tenant only one of each employee's two dated values per component is in effect on a date, so the export has about half of the 1M values (500,001 rows as of 2025-08-01); still 30 s. Export memory is measured in a restarted API process after a small warm-up export, because `VmHWM` would otherwise still hold the 1M-row upload's peak (3.6). The upload-during-export check names the PRP-001 100k-row tenant (3.6). A wrong method on `/api/v1/snapshots/{anything}/export` is `405`, also with a malformed id (3.3). No `Content-Length` for any size (3.5). The `Aborted` entry of a cancelled export is not checked from outside (11.5). The default `asOf` is the UTC date of the request, as in PRP-001 (3.2). Status Ready: key decisions made by the owner; holdout scenarios written (27 methods, 97 cases) and the 3.6 load checks added, with export memory measured in a fresh API process on the same database. On the image of `main` without PRP-004 code, only the checks that need the export routes fail, and the PRP-001, PRP-002, PRP-003 and PRP-005 suites pass |
+| 1.2     | 2026-11-15 | Run 8 (`prp004-20261115T132455Z-3201fa5f`, first attempt) implemented T0 to T4, merged in f5d1386. Its holdout scenarios passed on the agent's image (PRP-004 97/97, load 13/13), but CI on `main` (run 43722022445) failed one of its integration tests: the export logging test reads the log entries of every test in its class, and another test's legitimate `AsOf` of `2025-07-01` is one of its forbidden values (6.5 #12). The service is right. New task T5, test code only; a 1.2 run does T5 only. No behaviour change. Status stays Ready |
