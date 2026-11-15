@@ -36,7 +36,8 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
     private const string Current = "superseded_at IS NULL";
 
     // Both bounds matter: at a batch's apply time its new values are known and the ones it superseded are not.
-    private const string KnownAtInstant = "recorded_at <= @KnownAt AND (superseded_at IS NULL OR superseded_at > @KnownAt)";
+    // Shared with the export (PRP-004 6.5 #9).
+    internal const string KnownAtInstant = "recorded_at <= @KnownAt AND (superseded_at IS NULL OR superseded_at > @KnownAt)";
 
     /// <summary>
     /// The earliest later <c>ALLOWANCE</c> (PRP-003 3.4), over the same CTE as the inputs: the same value filter and,
