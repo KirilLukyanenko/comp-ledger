@@ -3,7 +3,7 @@
 | Field      | Value |
 |------------|-------|
 | Status     | Draft |
-| Version    | 1.0 |
+| Version    | 1.1 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-15 |
 | Depends on | PRP-001 (2.1, implemented), PRP-002 (1.3, implemented), PRP-005 (2.1, implemented: its tools must not change) |
@@ -49,7 +49,7 @@ Listed in the order the response gives them.
 | Reason              | When |
 |---------------------|------|
 | `MISSING_INPUT`     | A required input is not in effect on `asOf` |
-| `CURRENCY_MISMATCH` | The field uses `ALLOWANCE`, an `ALLOWANCE` is in effect, and its currency differs from `BASE_SALARY`'s (compared exactly; both are already three uppercase letters) |
+| `CURRENCY_MISMATCH` | The field uses `ALLOWANCE`, an `ALLOWANCE` is in effect, and its currency differs from `BASE_SALARY`'s (compared exactly; both are already three uppercase letters). Whatever its amount: an `ALLOWANCE` of `0` in another currency is still a mismatch |
 
 `TARGET_BONUS` does not use `ALLOWANCE`, so it can be computable while the two totals have `CURRENCY_MISMATCH`.
 
@@ -75,13 +75,13 @@ A field that is not computable has `null` `effectiveFrom` and `effectiveTo`.
 
 ### 3.5 Request and semantics
 
-1. **`include` query parameter** on the as-of read (`GET /api/v1/employees/{employeeId}/compensation`, with or without `knownAt`) and on the snapshot read (`GET /api/v1/snapshots/{snapshotId}/employees/{employeeId}/compensation`). The only accepted value is `computed`, matched exactly and case-sensitively on the raw value (not trimmed). Any other value (`Computed`, `computed,x`, an empty `include=`, a value with spaces) gives `400`. Given more than once gives `400`, even with equal values, as for the PRP-001 parameters.
+1. **`include` query parameter** on the as-of read (`GET /api/v1/employees/{employeeId}/compensation`, with or without `knownAt`) and on the snapshot read (`GET /api/v1/snapshots/{snapshotId}/employees/{employeeId}/compensation`). The only accepted value is `computed`, matched exactly and case-sensitively on the query value after URL decoding, as for `knownAt` (PRP-002 3.2), and not trimmed: `include=%63omputed` is `computed`, `include=%20computed` is not. Any other value (`Computed`, `computed,x`, an empty `include=`, a value with spaces) gives `400`. Given more than once gives `400`, even with equal values, as for the PRP-001 parameters. Whether a differently cased parameter name (`Include`) is the same parameter is not part of the contract, as for the PRP-001 and PRP-002 parameters. Before this PRP, `include` was an unknown parameter on these two reads and was ignored whatever its value, so a request with an invalid `include` that got `200` now gets `400`. That change is intended; requests without `include` are not affected (item 2).
 2. **Without `include`**, nothing changes: the response has no `computed` property at all (not `null`), and every PRP-001, PRP-002 and PRP-005 rule holds as written.
 3. **With `include=computed`**, the response gains `computed`: an array of exactly three entries, one per field of 3.2, in catalogue order, whether computable or not.
 4. **Everything else is as without it.** The same checks in the same order (tenant `401`, then query validation `400`, then lookups `404`); `include` is validated with the other query parameters. The same `404` rules: an employee with no values (as known at `knownAt`) is `404` with or without `include`. When the employee has values but none in effect on `asOf`, the response is `200` with empty `components`, and all three computed fields have `MISSING_INPUT`. The same wait for a batch being applied (PRP-002 3.4 item 4) whenever `knownAt` is given or the read is a snapshot read.
-5. **One consistent read.** The inputs, their periods and the earliest later `ALLOWANCE` (3.4) come from the same set of values, read in one transaction.
+5. **One consistent read.** The inputs, their periods and the earliest later `ALLOWANCE` (3.4) come from one view of the data: a batch that commits while the read runs is either entirely in it or entirely out of it. Reads with `knownAt` and snapshot reads get this from the PRP-002 lock and known-at filter. A read of current values takes no lock, so it gets it from reading everything in one SQL statement, or in one `REPEATABLE READ` transaction (6.5 #11). Two statements in a default `READ COMMITTED` transaction are not enough.
 6. **The snapshot read** names `include` as its parameter, in addition to refusing `asOf` and `knownAt` (PRP-002 3.4 item 6).
-7. **Other endpoints** do not name `include`. On the history read it is an ordinary unknown parameter and is ignored, as PRP-001 3.6 says: `?include=computed` answers exactly as without it, and so does `?include=anything`.
+7. **Other endpoints** do not name `include`. On the history read it is an ordinary unknown parameter and is ignored, as PRP-001 3.6 says, even when it is empty or repeated: `?include=computed` answers exactly as without it, and so do `?include=anything`, `?include=` and `?include=computed&include=computed`.
 8. **MCP is unchanged.** The PRP-005 tools `get_compensation` and `get_snapshot_compensation` answer exactly as their endpoints do **without** `include`. An `include` argument is an unknown argument and is ignored (PRP-005 3.2). Computed fields over MCP are a later PRP-005 version.
 9. **Tenant isolation** is inherited: the inputs are the tenant's own values, read under row-level security, as in PRP-001 and PRP-002.
 
@@ -218,7 +218,7 @@ tests/CompLedger.IntegrationTests/ComputedFieldsTests.cs
 | `decimal` arithmetic, `MidpointRounding.AwayFromZero` to 4 places, for `TARGET_BONUS` only | One exact, documented answer; matches PostgreSQL `round(numeric, 4)` |
 | Opt-in through `include=computed`; without it the response has no `computed` property | Existing clients, tests and holdout scenarios see byte-for-byte the same responses |
 | The MCP tools pass "`include` not given" to the shared operations | PRP-005 says a tool is its endpoint; computed fields over MCP need their own PRP-005 version |
-| The earliest later `ALLOWANCE` is read in the same transaction as the inputs, with the same known-at filter, only when `include=computed` | One consistent set of values (3.5 item 5); no extra query for reads without it |
+| The earliest later `ALLOWANCE` is read with the inputs, in the same SQL statement or the same `REPEATABLE READ` transaction, with the same known-at filter, and only when `include=computed` | One consistent view of the data (3.5 item 5); no extra work for reads without it |
 
 ### 6.5 Known gotchas
 
@@ -232,6 +232,7 @@ tests/CompLedger.IntegrationTests/ComputedFieldsTests.cs
 8. **The snapshot read refuses `asOf` and `knownAt` but now accepts `include`.** Do not make it refuse every parameter.
 9. **Empty `components` is not `404`.** An employee with values but none in effect gets three `MISSING_INPUT` entries (A5).
 10. **Currency comparison is ordinal.** Both currencies already passed `^[A-Z]{3}$` (PRP-001 3.3); compare with `string.Equals(a, b, StringComparison.Ordinal)`.
+11. **`READ COMMITTED` gives each statement its own view.** PostgreSQL's default isolation lets two statements of one transaction see different committed data (the same fact as PRP-002 6.5 #1). A current read takes no lock, so the as-of query and a separate later-`ALLOWANCE` query can straddle a batch's commit: the old bonus percent with the new `ALLOWANCE`'s date, or the reverse. Either compute the later `ALLOWANCE` in the same statement as the inputs (a subquery or a window over the same rows), or run the read's statements in a `REPEATABLE READ` transaction. Reads with `knownAt` are consistent either way, because the known-at filter excludes every batch applied after `knownAt`. The holdout scenarios cannot provoke this race; cover it with a test or say in the PR description how the read guarantees it.
 
 ## 7. Implementation blueprint
 
@@ -244,10 +245,11 @@ None. No migration, no new column, no new index. The PRP-002 index on `compensat
 ```
 as-of read (REST) with include=computed:
   validate asOf, knownAt, include (400)
-  in one transaction (with the PRP-002 lock when knownAt is given or for a snapshot read):
+  in one view of the data (3.5 item 5, 6.5 #11; with the PRP-002 lock when knownAt is given or for a snapshot read):
     inputs  <- the existing as-of query: the values in effect on asOf, with their periods
-    nextAllowance <- SELECT min(effective_from) FROM <the same value set>
+    nextAllowance <- min(effective_from) over <the same value set>
                      WHERE employee_id = @e AND component = 'ALLOWANCE' AND effective_from > @asOf
+                     (in the same statement as inputs, or in the same REPEATABLE READ transaction)
     existence check as today (404)
   computed <- ComputedFields.For(asOf, inputs, nextAllowance)
 
@@ -312,9 +314,11 @@ All PRP-001, PRP-002 and PRP-005 tests must keep passing unchanged. Never weaken
 2. **Load gate** for 3.7: computed read latency on the 1M-row tenant; the existing budgets.
 3. **AI review against this PRP** on the pull request.
 4. All PRP-001, PRP-002 and PRP-005 holdout scenarios still run and must still pass, which also checks that responses without `include` and the MCP tools did not change.
+5. **Not checked by the holdout scenarios:** the consistency of a read of current values while a batch commits (3.5 item 5). A black-box test cannot place a commit between two statements of one read. The scenarios check consistency for reads with `knownAt` and snapshot reads; for current reads it rests on the implementer's tests and review (6.5 #11).
 
 ## Changelog
 
 | Version | Date       | Change |
 |---------|------------|--------|
 | 1.0     | 2026-11-15 | First version (Draft). Owner's decisions: a fixed catalogue of three fields (no tenant formulas); a missing `ALLOWANCE` counts as 0; computed fields only on the as-of and snapshot reads, opt-in with `include=computed`; no MCP change in this PRP |
+| 1.1     | 2026-11-15 | Closes the 6 gaps found while writing the holdout scenarios. A current read has to see one view of the data: two statements in a `READ COMMITTED` transaction can straddle a batch's commit, so the inputs and the later `ALLOWANCE` come from one statement or one `REPEATABLE READ` transaction (3.5 item 5, 6.4, 6.5 #11, 7.2, 11.5). `include` is matched after URL decoding, as `knownAt` is; the case of its name is not part of the contract; it newly gives `400` for invalid values on the two reads that name it, and stays ignored on the history read even when empty or repeated (3.5 items 1 and 7). An `ALLOWANCE` of `0` in another currency is still `CURRENCY_MISMATCH` (3.2) |
