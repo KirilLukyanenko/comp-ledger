@@ -157,7 +157,13 @@ public sealed class McpLoggingTests(ApiFactory api) : IClassFixture<ApiFactory>
             "918273645", "COMPONENT-SECRET", "BATCH-SECRET", "SNAPSHOT-SECRET", "UNKNOWN-TOOL-SECRET",
         ];
         var application = api.Logs.Entries.Where(e => !IsFramework(e)).ToList();
-        var everything = string.Join('\n', application.Select(Text));
+
+        // Entries of other tests' tenants are left out (their ids and instants may hold these digits); entries without
+        // a tenant, such as the SDK's, are kept.
+        var tenantText = tenant.ToString("D");
+        var everything = string.Join('\n', application
+            .Where(e => !e.State.Any(p => p.Key == "TenantId" && !Equals(p.Value, tenantText)))
+            .Select(Text));
         foreach (var secret in secrets)
         {
             Assert.DoesNotContain(secret, everything, StringComparison.Ordinal);

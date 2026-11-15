@@ -729,8 +729,12 @@ public sealed class ApiContractTests(ApiFactory api) : IClassFixture<ApiFactory>
             Assert.InRange(Assert.IsType<long>(state["DurationMs"]), 0L, 60_000L);
         }
 
-        // Nothing the app logged for this tenant's uploads carries row contents: no employee id, no amount.
-        var everything = string.Join('\n', api.Logs.Entries.Select(e => e.Message + " " + string.Join(' ', e.State.Select(p => $"{p.Key}={p.Value}"))));
+        // Nothing the app logged for this tenant's uploads carries row contents: no employee id, no amount. Entries of
+        // other tests' tenants are left out (their ids may hold these digits); entries without a tenant are kept.
+        var tenantText = tenant.ToString("D");
+        var everything = string.Join('\n', api.Logs.Entries
+            .Where(e => !e.State.Any(p => p.Key == "TenantId" && !Equals(p.Value, tenantText)))
+            .Select(e => e.Message + " " + string.Join(' ', e.State.Select(p => $"{p.Key}={p.Value}"))));
         foreach (var secret in new[] { "51234", "4321.1234", "98765", "E-77", "E-88", "E-89", "CHF" })
         {
             Assert.DoesNotContain(secret, everything, StringComparison.Ordinal);

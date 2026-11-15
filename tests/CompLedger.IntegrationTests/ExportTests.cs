@@ -733,8 +733,9 @@ public sealed class ExportTests(ApiFactory api) : IClassFixture<ApiFactory>
 
         Assert.Equal(entriesBefore + 3, ApplicationEntries(tenant).Count);
 
-        // No employee id, component, date or amount of any row in anything the export logged.
-        var everything = string.Join('\n', api.Logs.Entries.Where(e => e.Category == "CompLedger.Export")
+        // No employee id, component, date or amount of any row in anything the export logged for this tenant. Other
+        // tests of the class share the log, and their entries carry their own coordinates (an AsOf of 2025-07-01).
+        var everything = string.Join('\n', ExportEntries(tenant)
             .Select(e => e.Message + " " + string.Join(' ', e.State.Select(p => $"{p.Key}={p.Value}"))));
         foreach (var secret in new[] { "E-1001", "E-1002", "BASE_SALARY", "ALLOWANCE", "52000", "48000", "6000", "2026-04-01", "2026-06-30", "2025-07-01" })
         {
