@@ -23,15 +23,9 @@ public sealed class CompensationOperations(CompensationQueries queries)
     public async Task<OperationResult> GetAsOfAsync(
         Guid tenantId, string employeeId, StringValues asOfValues, StringValues knownAtValues, StringValues includeValues, CancellationToken cancellationToken)
     {
-        DateOnly asOf;
-        if (asOfValues.Count == 0)
+        if (!TryReadAsOf(asOfValues, out var asOf))
         {
-            asOf = DateOnly.FromDateTime(DateTime.UtcNow);
-        }
-        else if (asOfValues.Count > 1 || RowParser.CheckDate(asOfValues[0] ?? "", out asOf) != DateCheck.Valid)
-        {
-            return OperationResult.Problem(
-                StatusCodes.Status400BadRequest, "asOf must be given at most once, as a real yyyy-MM-dd date from 1900-01-01 to 2999-12-31.");
+            return InvalidAsOf();
         }
 
         if (!TryReadKnownAt(knownAtValues, out var knownAt))
@@ -106,10 +100,30 @@ public sealed class CompensationOperations(CompensationQueries queries)
             result.NextAllowanceFrom);
 
     /// <summary>
+    /// Reads the optional <c>asOf</c> parameter (PRP-001 3.6): not given, then today (UTC); or given once as a real
+    /// <c>yyyy-MM-dd</c> date in range, not trimmed. False when it is given more than once or is not such a date.
+    /// </summary>
+    internal static bool TryReadAsOf(StringValues values, out DateOnly asOf)
+    {
+        if (values.Count == 0)
+        {
+            asOf = DateOnly.FromDateTime(DateTime.UtcNow);
+            return true;
+        }
+
+        asOf = default;
+        return values.Count == 1 && RowParser.CheckDate(values[0] ?? "", out asOf) == DateCheck.Valid;
+    }
+
+    internal static OperationResult InvalidAsOf() =>
+        OperationResult.Problem(
+            StatusCodes.Status400BadRequest, "asOf must be given at most once, as a real yyyy-MM-dd date from 1900-01-01 to 2999-12-31.");
+
+    /// <summary>
     /// Reads the optional <c>knownAt</c> parameter (PRP-002 3.2). False when it is given more than once, is empty or
     /// is not an accepted instant. The upper bound, the request time, is checked later on the database clock.
     /// </summary>
-    private static bool TryReadKnownAt(StringValues values, out DateTime? knownAt)
+    internal static bool TryReadKnownAt(StringValues values, out DateTime? knownAt)
     {
         knownAt = null;
         if (values.Count == 0)
@@ -129,7 +143,7 @@ public sealed class CompensationOperations(CompensationQueries queries)
     /// <summary>The instant in the response format, or null when there is none.</summary>
     private static string? FormatKnownAt(DateTime? knownAt) => knownAt is { } instant ? KnownAt.Format(instant) : null;
 
-    private static OperationResult InvalidKnownAt() =>
+    internal static OperationResult InvalidKnownAt() =>
         OperationResult.Problem(
             StatusCodes.Status400BadRequest,
             "knownAt must be given at most once, as a UTC instant such as 2026-11-13T14:22:31.123456Z with at most six fractional digits, "
