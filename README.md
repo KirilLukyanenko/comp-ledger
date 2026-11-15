@@ -90,8 +90,8 @@ Not yet measured: the CI AI review has not run, because the repository has no AP
 specs/            PRPs, the template and the rules for writing them
 .claude/          skills, sub-agents and permissions for Claude Code
 CLAUDE.md         rules every agent reads first
-tools/            verify.sh (gates), run-prp.cs (agent runs), metrics-report.cs
-metrics/          runs.jsonl, written by run-prp.cs; definitions in README.md
+tools/            verify.sh (gates), run-prp.cs (agent runs), dispatch.cs (several at once), metrics-report.cs
+metrics/          runs.jsonl, written by run-prp.cs; dispatches.jsonl, by dispatch.cs; definitions in README.md
 .github/          CI and the AI review prompt
 src/, tests/, db/ the service, written by the agents
 ```
@@ -110,6 +110,22 @@ To run an agent on a spec, you also need the Claude Code CLI, signed in, and thi
 ```bash
 dotnet run tools/run-prp.cs -- 001 --max-budget-usd 30
 ```
+
+### Several specs at once
+
+[`tools/dispatch.cs`](tools/dispatch.cs) runs several PRPs in parallel, each through `run-prp.cs` in its own worktree, under one budget:
+
+```bash
+dotnet run tools/dispatch.cs -- --ready --budget-usd 40 --dry-run   # the plan only
+dotnet run tools/dispatch.cs -- --ready --budget-usd 40             # every Ready spec, two at a time
+dotnet run tools/dispatch.cs -- 003 004 --parallel 2 --budget-usd 30
+```
+
+- **Plan.** A spec is skipped, with the reason, if it is not Ready, if a spec it depends on is not Implemented (a dependency in the same batch isn't merged yet, so it doesn't count), if a run of it is already in progress, or if a run of its current version passed the gates and waits for review.
+- **Budget.** A run starts only if the money spent so far, plus the cap of every running run, plus its own cap fits in `--budget-usd`. So the total holds even if every run spends its whole cap (`--max-budget-usd`, default budget / parallel).
+- **Conflicts.** When the runs are done, every pair of branches is merged in memory with `git merge-tree`: independent, both change the same files but merge cleanly, or conflict. The merge order stays a human decision. `dotnet run tools/dispatch.cs -- conflicts <branch> <branch>` runs only this check.
+
+The live state is in `.prp-run/dispatches/<id>.json` (gitignored); a finished dispatch appends one line to `metrics/dispatches.jsonl`. With `--replay` and `--runs-file` it runs the whole pipeline, worktrees and gates included, without calling the agent. The first such check: two specs in parallel took 3.3 minutes instead of 6.6, and the third waited, then was skipped for the budget.
 
 The holdout scenarios are private, so a fork's CI skips them.
 

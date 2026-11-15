@@ -144,7 +144,7 @@ var record = new JsonObject
 };
 
 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(runsFile))!);
-File.AppendAllText(runsFile, record.ToJsonString() + "\n", new UTF8Encoding(false));
+Runs.Append(runsFile, record.ToJsonString() + "\n");
 
 Console.WriteLine(record.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 if (opt.Replay is not null)
@@ -216,6 +216,26 @@ static class Spec
 
 static class Runs
 {
+    // tools/dispatch.cs runs several of these at once, and two can finish in the same moment. The file is opened
+    // exclusively, so the other one waits and retries instead of losing the record of a run that already cost money.
+    public static void Append(string file, string line)
+    {
+        var bytes = new UTF8Encoding(false).GetBytes(line);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.None);
+                stream.Write(bytes);
+                return;
+            }
+            catch (IOException) when (attempt < 100)
+            {
+                Thread.Sleep(100);
+            }
+        }
+    }
+
     public static int CountAttempts(string file, string prp, string version)
     {
         if (!File.Exists(file)) return 0;
