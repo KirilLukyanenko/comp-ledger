@@ -33,7 +33,7 @@ public sealed class ExportTests(ApiFactory api) : IClassFixture<ApiFactory>
         + "E-1002,BASE_SALARY,2025-07-01,,48000,USD\n";
 
     /// <summary>A text unique to the streaming statement, to find its backend.</summary>
-    private const string ExportStatementMarker = "PARTITION BY employee_id, component";
+    private const string ExportStatementMarker = "/* comp-ledger export rows */";
 
     private readonly HttpClient _client = api.CreateClient();
 
@@ -541,6 +541,136 @@ public sealed class ExportTests(ApiFactory api) : IClassFixture<ApiFactory>
         Assert.Equal(rows, count);
     }
 
+    /// <summary>
+    /// 3.4 item 3 and the order of 3.3: an export with <c>knownAt</c> and a snapshot export wait for the batch too;
+    /// the <c>knownAt</c> bound is the request time after the wait; a missing snapshot is 404 before the wait.
+    /// </summary>
+    [Fact]
+    public async Task An_export_with_knownAt_and_a_snapshot_export_wait_too_and_a_missing_snapshot_answers_at_once()
+    {
+        const int rows = 1_000_000;
+        var tenant = await api.NewTenantAsync(_client);
+        await _client.AppliedAtAsync(tenant, Header + "E-0000001,BASE_SALARY,2026-01-01,1,EUR\n");
+        var snapshot = await CreateSnapshotAsync(tenant, "Before the batch", "2026-03-01");
+
+        var csv = new StringBuilder(Header, rows * 44);
+        for (var i = 1; i <= rows; i++)
+        {
+            csv.Append("E-").Append(i.ToString("D7", CultureInfo.InvariantCulture)).Append(",BASE_SALARY,2026-01-01,").Append(30000 + i).Append(",EUR\n");
+        }
+
+        var body = Encoding.ASCII.GetBytes(csv.ToString());
+        csv.Clear();
+        var upload = Task.Run(() => _client.UploadAsync(tenant, body), Ct);
+
+        await using var monitor = await api.Database.AppDataSource.OpenConnectionAsync(Ct);
+        const string HolderSql =
+            """
+            SELECT pid FROM pg_locks
+            WHERE locktype = 'advisory' AND mode = 'ExclusiveLock' AND granted AND objsubid = 1
+              AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(@tenant, 0)
+            """;
+        async Task<int?> HolderAsync() => await monitor.ExecuteScalarAsync<int?>(HolderSql, new { tenant = tenant.ToString("D") });
+
+        // Wait until the upload holds the lock and has fixed its apply time (as the PRP-002 A8 test does).
+        var deadline = DateTime.UtcNow.AddMinutes(3);
+        int? holder;
+        while ((holder = await HolderAsync()) is null
+               || !await monitor.ExecuteScalarAsync<bool>(
+                   """
+                   SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                                  WHERE pid = @holder AND query NOT LIKE '%pg_advisory_xact_lock%' AND query NOT LIKE '%clock_timestamp()%')
+                   """,
+                   new { holder }))
+        {
+            Assert.False(upload.IsCompleted, "The upload finished before its apply time was seen to be fixed.");
+            Assert.True(DateTime.UtcNow < deadline, "The upload never got past its apply time.");
+            await Task.Delay(TimeSpan.FromMilliseconds(2), Ct);
+        }
+
+        var now = Instants.Write(await monitor.ExecuteScalarAsync<DateTime>("SELECT clock_timestamp()"));
+
+        // A little later than the arrival of the request: valid only against the request time after the wait.
+        var soon = Instants.Shift(now, 300_000);
+
+        var withKnownAt = OpenAsync(Export + $"?asOf=2026-03-01&knownAt={now}", tenant);
+        var afterArrival = OpenAsync(Export + $"?asOf=2026-03-01&knownAt={soon}", tenant);
+        var throughSnapshot = OpenAsync(SnapshotExport(snapshot), tenant);
+
+        // The lookup comes before the wait: an unknown snapshot is 404 while the batch is still being applied.
+        using (var missing = await _client.GetAsync($"{Snapshots}/{Guid.CreateVersion7()}/export", tenant).WaitAsync(TimeSpan.FromSeconds(20), Ct))
+        {
+            await missing.AssertProblemAsync(HttpStatusCode.NotFound);
+            Assert.False(upload.IsCompleted, "The batch was expected to be still applying when the 404 came back.");
+        }
+
+        // No headers while the lock is held: an answer seen before a held lock is a failure.
+        await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        var answered = withKnownAt.IsCompleted || afterArrival.IsCompleted || throughSnapshot.IsCompleted;
+        var stillHeld = await HolderAsync() is not null;
+        Assert.False(answered && stillHeld, "An export sent its headers while the batch was being applied.");
+
+        // The instant soon is reached while the lock is still held, so the request time after the wait is later.
+        var heldAtSoon = false;
+        while (true)
+        {
+            var dbNow = Instants.Write(await monitor.ExecuteScalarAsync<DateTime>("SELECT clock_timestamp()"));
+            var held = await HolderAsync() is not null;
+            if (string.CompareOrdinal(dbNow, soon) >= 0)
+            {
+                heldAtSoon = held;
+                break;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), Ct);
+        }
+
+        using var uploaded = await upload.WaitAsync(TimeSpan.FromMinutes(3), Ct);
+        Assert.Equal(HttpStatusCode.Created, uploaded.StatusCode);
+        var appliedAt = (await uploaded.JsonAsync()).GetProperty("appliedAt").GetString();
+        Assert.True(string.CompareOrdinal(appliedAt, now) < 0);
+
+        async Task<long> CountRowsAsync(HttpResponseMessage response)
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            await using var stream = await response.Content.ReadAsStreamAsync(Ct);
+            var buffer = new byte[1 << 16];
+            long lines = 0;
+            int n;
+            while ((n = await stream.ReadAsync(buffer, Ct)) > 0)
+            {
+                lines += buffer.AsSpan(0, n).Count((byte)'\n');
+            }
+
+            return lines - 1;
+        }
+
+        // Both include the batch: it was applied before the instant, and the export waited for its commit.
+        using (var response = await withKnownAt.WaitAsync(TimeSpan.FromMinutes(3), Ct))
+        {
+            Assert.Equal(now, Single(response, "X-Known-At"));
+            Assert.Equal(rows, await CountRowsAsync(response));
+        }
+
+        using (var response = await afterArrival.WaitAsync(TimeSpan.FromMinutes(3), Ct))
+        {
+            if (heldAtSoon)
+            {
+                Assert.Equal(soon, Single(response, "X-Known-At"));
+                Assert.Equal(rows, await CountRowsAsync(response));
+            }
+        }
+
+        Assert.True(heldAtSoon, "The batch committed before the instant soon was reached; the bound after the wait was not checked.");
+
+        // The snapshot was taken before the batch: its file does not change.
+        using (var response = await throughSnapshot.WaitAsync(TimeSpan.FromMinutes(3), Ct))
+        {
+            Assert.Equal(snapshot.GetProperty("knownAt").GetString(), Single(response, "X-Known-At"));
+            Assert.Equal(H + "E-0000001,BASE_SALARY,2026-01-01,,1,EUR\n", await response.Content.ReadAsStringAsync(Ct));
+        }
+    }
+
     // ---------- 3.3 after the first byte, and the logging budget of 3.6 ----------
 
     private static bool IsFramework(CapturedLogs.Entry entry) =>
@@ -714,7 +844,7 @@ public sealed class ExportTests(ApiFactory api) : IClassFixture<ApiFactory>
         {
             var deadline = DateTime.UtcNow.AddSeconds(30);
             while (await monitor.ExecuteScalarAsync<int>(
-                       "SELECT count(pg_terminate_backend(pid))::int FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND query LIKE '%' || @marker || '%'",
+                       "SELECT count(pg_terminate_backend(pid))::int FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND state = 'active' AND query LIKE '%' || @marker || '%'",
                        new { marker = ExportStatementMarker }) == 0)
             {
                 Assert.True(DateTime.UtcNow < deadline, "The export statement was not found.");

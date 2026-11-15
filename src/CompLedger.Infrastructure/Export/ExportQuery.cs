@@ -27,6 +27,7 @@ public sealed class ExportQuery(NpgsqlDataSource dataSource)
     /// </summary>
     private const string RowsSql =
         $"""
+        /* comp-ledger export rows */
         WITH periods AS (
           SELECT employee_id, component, amount, currency::text AS currency, effective_from,
                  lead(effective_from) OVER (PARTITION BY employee_id, component ORDER BY effective_from) - 1 AS effective_to
