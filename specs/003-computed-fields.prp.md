@@ -2,8 +2,8 @@
 
 | Field      | Value |
 |------------|-------|
-| Status     | Ready |
-| Version    | 1.1 |
+| Status     | Implemented |
+| Version    | 1.2 |
 | Owner      | KirilLukyanenko |
 | Created    | 2026-11-15 |
 | Depends on | PRP-001 (2.1, implemented), PRP-002 (1.3, implemented), PRP-005 (2.1, implemented: its tools must not change) |
@@ -322,3 +322,4 @@ All PRP-001, PRP-002 and PRP-005 tests must keep passing unchanged. Never weaken
 |---------|------------|--------|
 | 1.0     | 2026-11-15 | First version (Draft). Owner's decisions: a fixed catalogue of three fields (no tenant formulas); a missing `ALLOWANCE` counts as 0; computed fields only on the as-of and snapshot reads, opt-in with `include=computed`; no MCP change in this PRP |
 | 1.1     | 2026-11-15 | Closes the 6 gaps found while writing the holdout scenarios. A current read has to see one view of the data: two statements in a `READ COMMITTED` transaction can straddle a batch's commit, so the inputs and the later `ALLOWANCE` come from one statement or one `REPEATABLE READ` transaction (3.5 item 5, 6.4, 6.5 #11, 7.2, 11.5). `include` is matched after URL decoding, as `knownAt` is; the case of its name is not part of the contract; it newly gives `400` for invalid values on the two reads that name it, and stays ignored on the history read even when empty or repeated (3.5 items 1 and 7). An `ALLOWANCE` of `0` in another currency is still `CURRENCY_MISMATCH` (3.2). Status Ready: key decisions made by the owner; holdout scenarios written (42 methods, 88 cases) and the 3.7 load test added. On the image of `main` without PRP-003 code, only the expected cases fail (no `computed`, or no `400` for an invalid `include`), and the PRP-001, PRP-002 and PRP-005 suites pass |
+| 1.2     | 2026-11-15 | Implemented: agent run `prp003-20261115T012320Z-f519b39f` (first attempt), merged in 24d5202; CI runs 43706051962 and 43706417821 on `main`: holdout scenarios 88/88 (PRP-001 509/509, PRP-002 360/360, PRP-005 293/293), load gate 10/10, computed read p95 2.3 ms (printed only by the second run, after a8f7a39 added the line to the CI summary), 1M rows in 6.0 and 8.0 s, peak RSS 116.3 MiB. Wording from the agent's notes, no behaviour change: the parameter name `include` is accepted in any case, because ASP.NET Core reads query names case-insensitively; 3.5 item 1 already leaves that case out of the contract. T3 only measures, so its commit is empty and carries the numbers in its message |
