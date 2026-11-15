@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using CompLedger.Core;
 using CompLedger.Core.Ingestion;
@@ -78,14 +79,28 @@ public sealed partial class SnapshotOperations(SnapshotStore snapshots, Compensa
         return snapshot is null ? SnapshotNotFound() : OperationResult.Ok(ToResponse(snapshot));
     }
 
-    /// <summary>Order of checks: parameters (400), the snapshot (404), then the employee (404).</summary>
+    /// <summary>
+    /// Order of checks: parameters (400), the snapshot (404), then the employee (404). <paramref name="includeValues"/>
+    /// is the PRP-003 <c>include</c> parameter; the MCP tool always passes it as not given.
+    /// </summary>
     public async Task<OperationResult> GetEmployeeAsync(
-        Guid tenantId, string snapshotId, string employeeId, StringValues asOfValues, StringValues knownAtValues, CancellationToken cancellationToken)
+        Guid tenantId,
+        string snapshotId,
+        string employeeId,
+        StringValues asOfValues,
+        StringValues knownAtValues,
+        StringValues includeValues,
+        CancellationToken cancellationToken)
     {
         // The snapshot fixes both coordinates, so the read names these two parameters only to refuse them.
         if (asOfValues.Count > 0 || knownAtValues.Count > 0)
         {
             return OperationResult.Problem(StatusCodes.Status400BadRequest, "A snapshot read takes no asOf and no knownAt: the snapshot fixes both.");
+        }
+
+        if (!CompensationOperations.TryReadInclude(includeValues, out var withComputed))
+        {
+            return CompensationOperations.InvalidInclude();
         }
 
         var snapshot = await FindAsync(tenantId, snapshotId, cancellationToken);
@@ -96,11 +111,16 @@ public sealed partial class SnapshotOperations(SnapshotStore snapshots, Compensa
 
         // The as-known-at as-of query for the snapshot's pair; like any read with an instant, it waits for a batch
         // of the tenant that is being applied.
-        var result = await queries.GetAsOfAsync(tenantId, employeeId, snapshot.AsOf, snapshot.KnownAt, cancellationToken);
+        var result = await queries.GetAsOfAsync(tenantId, employeeId, snapshot.AsOf, snapshot.KnownAt, withComputed, cancellationToken);
         return result.Outcome switch
         {
-            CompensationOutcome.Found => OperationResult.Ok(
-                new SnapshotEmployeeResponse(snapshot.SnapshotId, employeeId, snapshot.AsOf, KnownAt.Format(snapshot.KnownAt), result.Periods)),
+            CompensationOutcome.Found => OperationResult.Ok(new SnapshotEmployeeResponse(
+                snapshot.SnapshotId,
+                employeeId,
+                snapshot.AsOf,
+                KnownAt.Format(snapshot.KnownAt),
+                result.Periods,
+                withComputed ? CompensationOperations.Computed(snapshot.AsOf, result) : null)),
             CompensationOutcome.EmployeeNotFound => CompensationOperations.EmployeeNotFound(),
 
             // The instant came from this database's clock when the snapshot was created.
@@ -135,6 +155,12 @@ public sealed partial class SnapshotOperations(SnapshotStore snapshots, Compensa
 
     private sealed record SnapshotListResponse(IReadOnlyList<SnapshotResponse> Snapshots);
 
+    /// <summary><see cref="Computed"/> is left out entirely, not written as null, without <c>include=computed</c>.</summary>
     private sealed record SnapshotEmployeeResponse(
-        Guid SnapshotId, string EmployeeId, DateOnly AsOf, string KnownAt, IReadOnlyList<CompensationPeriod> Components);
+        Guid SnapshotId,
+        string EmployeeId,
+        DateOnly AsOf,
+        string KnownAt,
+        IReadOnlyList<CompensationPeriod> Components,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ComputedField>? Computed);
 }

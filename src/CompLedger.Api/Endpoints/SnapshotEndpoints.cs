@@ -55,7 +55,8 @@ public static class SnapshotEndpoints
         string snapshotId, string employeeId, HttpContext context, SnapshotOperations operations, CancellationToken cancellationToken)
     {
         var query = context.Request.Query;
-        return (await operations.GetEmployeeAsync(context.GetTenantId(), snapshotId, employeeId, query["asOf"], query["knownAt"], cancellationToken))
+        return (await operations.GetEmployeeAsync(
+                context.GetTenantId(), snapshotId, employeeId, query["asOf"], query["knownAt"], query["include"], cancellationToken))
             .ToHttpResult();
     }
 

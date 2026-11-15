@@ -17,7 +17,8 @@ public static class CompensationEndpoints
     private static async Task<IResult> GetAsOfAsync(string employeeId, HttpContext context, CompensationOperations operations, CancellationToken cancellationToken)
     {
         var query = context.Request.Query;
-        return (await operations.GetAsOfAsync(context.GetTenantId(), employeeId, query["asOf"], query["knownAt"], cancellationToken)).ToHttpResult();
+        return (await operations.GetAsOfAsync(context.GetTenantId(), employeeId, query["asOf"], query["knownAt"], query["include"], cancellationToken))
+            .ToHttpResult();
     }
 
     private static async Task<IResult> GetHistoryAsync(string employeeId, HttpContext context, CompensationOperations operations, CancellationToken cancellationToken)

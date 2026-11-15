@@ -21,7 +21,11 @@ public enum CompensationOutcome
     KnownAtAfterRequestTime,
 }
 
-public sealed record CompensationResult(CompensationOutcome Outcome, IReadOnlyList<CompensationPeriod> Periods);
+/// <summary>
+/// <see cref="NextAllowanceFrom"/> is set only when it was asked for: the start of the earliest <c>ALLOWANCE</c> after
+/// the as-of date among the same values as <see cref="Periods"/>, or null when there is none (PRP-003 3.4).
+/// </summary>
+public sealed record CompensationResult(CompensationOutcome Outcome, IReadOnlyList<CompensationPeriod> Periods, DateOnly? NextAllowanceFrom = null);
 
 /// <summary>
 /// Reads the values of one employee inside a tenant scope: the current ones (PRP-001), or the ones known at an
@@ -35,15 +39,31 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
     private const string KnownAtInstant = "recorded_at <= @KnownAt AND (superseded_at IS NULL OR superseded_at > @KnownAt)";
 
     /// <summary>
-    /// Values in effect on the date, by component code. With <paramref name="knownAt"/>, among the values known at
-    /// that instant; without it, among the current ones.
+    /// The earliest later <c>ALLOWANCE</c> (PRP-003 3.4), over the same CTE as the inputs: the same value filter and,
+    /// being one statement, the same view of the data. A read of current values needs no lock for it.
     /// </summary>
-    public Task<CompensationResult> GetAsOfAsync(Guid tenantId, string employeeId, DateOnly asOf, DateTime? knownAt, CancellationToken cancellationToken) =>
+    private const string NextAllowanceColumn =
+        """
+             , (SELECT min(effective_from) FROM periods
+                WHERE component = 'ALLOWANCE' AND effective_from > @AsOf::date) AS NextAllowanceFrom
+
+        """;
+
+    /// <summary>
+    /// Values in effect on the date, by component code. With <paramref name="knownAt"/>, among the values known at
+    /// that instant; without it, among the current ones. With <paramref name="withNextAllowance"/>, also the start of
+    /// the earliest later <c>ALLOWANCE</c> among the same values, read in the same statement so that a batch that
+    /// commits meanwhile is either in both or in neither (PRP-003 3.5 item 5).
+    /// </summary>
+    public Task<CompensationResult> GetAsOfAsync(
+        Guid tenantId, string employeeId, DateOnly asOf, DateTime? knownAt, bool withNextAllowance, CancellationToken cancellationToken) =>
         QueryAsync(
             tenantId,
             employeeId,
             knownAt,
-            """
+            (withNextAllowance ? NextAllowanceColumn : "")
+            + """
+            FROM periods
             WHERE effective_from <= @AsOf::date AND (effective_to IS NULL OR effective_to >= @AsOf::date)
             ORDER BY component COLLATE "C"
             """,
@@ -60,6 +80,7 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
             employeeId,
             knownAt,
             """
+            FROM periods
             WHERE @Component::text IS NULL OR component = @Component
             ORDER BY component COLLATE "C", effective_from
             """,
@@ -69,7 +90,8 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
     /// <summary>
     /// The periods of one employee among the values the filter selects. A period ends the day before the next later
     /// value of the same component starts. The filter runs before the window function, so a value outside the set
-    /// (superseded, or recorded after the instant) never splits a period.
+    /// (superseded, or recorded after the instant) never splits a period. The caller appends any further select-list
+    /// items, then the FROM clause.
     /// </summary>
     private static string Periods(string valueFilter) =>
         $"""
@@ -81,12 +103,11 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
         )
         SELECT component AS Component, amount AS Amount, currency AS Currency,
                effective_from AS EffectiveFrom, effective_to AS EffectiveTo
-        FROM periods
 
         """;
 
     private async Task<CompensationResult> QueryAsync(
-        Guid tenantId, string employeeId, DateTime? knownAt, string filterAndOrder, object parameters, CancellationToken cancellationToken)
+        Guid tenantId, string employeeId, DateTime? knownAt, string selectRest, object parameters, CancellationToken cancellationToken)
     {
         await using var scope = await TenantScope.BeginAsync(dataSource, tenantId, cancellationToken);
 
@@ -109,7 +130,7 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
         }
 
         var rows = (await scope.Connection.QueryAsync<PeriodRow>(new CommandDefinition(
-            Periods(knownAt is null ? Current : KnownAtInstant) + filterAndOrder,
+            Periods(knownAt is null ? Current : KnownAtInstant) + selectRest,
             parameters,
             scope.Transaction,
             cancellationToken: cancellationToken))).AsList();
@@ -131,6 +152,9 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
         }
 
         await scope.CommitAsync(cancellationToken);
+
+        // Every row carries the same later ALLOWANCE. With no row in effect there is none to read, and none is needed:
+        // without inputs no computed field is computable, so none has a period.
         return new CompensationResult(
             CompensationOutcome.Found,
             rows.ConvertAll(row => new CompensationPeriod(
@@ -138,7 +162,8 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
                 row.Amount,
                 row.Currency,
                 DateOnly.FromDateTime(row.EffectiveFrom),
-                row.EffectiveTo is { } effectiveTo ? DateOnly.FromDateTime(effectiveTo) : null)));
+                row.EffectiveTo is { } effectiveTo ? DateOnly.FromDateTime(effectiveTo) : null)),
+            rows.Count > 0 && rows[0].NextAllowanceFrom is { } next ? DateOnly.FromDateTime(next) : null);
     }
 
     private sealed class PeriodRow
@@ -152,5 +177,7 @@ public sealed class CompensationQueries(NpgsqlDataSource dataSource)
         public DateTime EffectiveFrom { get; set; }
 
         public DateTime? EffectiveTo { get; set; }
+
+        public DateTime? NextAllowanceFrom { get; set; }
     }
 }
