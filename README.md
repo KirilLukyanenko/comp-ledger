@@ -11,9 +11,10 @@ The service is the vehicle. The point is the process around it: how to hand a fe
 | [PRP-001](specs/001-tenant-ingestion-effective-dating.prp.md) | CSV ingestion of compensation values with effective dating, append-only corrections, atomic batches, tenant isolation enforced by PostgreSQL row-level security | Implemented, version 2.1 |
 | [PRP-002](specs/002-as-known-at-and-snapshots.prp.md) | "As known at" queries over the two time axes PRP-001 already stores, and named snapshots that give the same answer forever without copying data | Implemented, version 1.3 |
 | [PRP-003](specs/003-computed-fields.prp.md) | Computed fields on request (`include=computed`): target bonus, total fixed pay and total target cash, from the same values as the read, so they work with "as known at" and snapshots | Implemented, version 1.2 |
+| [PRP-004](specs/004-streaming-export.prp.md) | Streaming CSV export of every value in effect on a date, now, as known at an instant, or through a snapshot; the file names its instant, so asking again gives the same bytes, and a slow download never holds up uploads | Implemented, version 1.3 |
 | [PRP-005](specs/005-mcp-server.prp.md) | An MCP server inside the API at `/mcp`: seven tools that are the read and snapshot endpoints, with the same inputs, answers, errors and tenant check | Implemented, version 2.1 |
 
-Next: streaming export ([PRP-004](specs/004-streaming-export.prp.md), draft 1.0). Its number was reserved before the MCP server was specified.
+Next: computed fields over MCP and in the export (later versions of PRP-005 and PRP-004).
 
 ## How a feature gets built
 
@@ -39,7 +40,7 @@ Next: streaming export ([PRP-004](specs/004-streaming-export.prp.md), draft 1.0)
 
 ## Results so far
 
-All from [`metrics/runs.jsonl`](metrics/runs.jsonl), the CI logs and the holdout repository, for four specs and seven agent runs. That is a worked example, not a benchmark. Model: Claude Code's default, which was `claude-fable-5-2` for runs 1 to 5 and `claude-opus-5-5` for runs 6 and 7; the wrapper does not choose one, so runs 6 and 7 are not a like-for-like comparison. Cost is the API-list-price estimate Claude Code reports; the runs were on a subscription, so it is not what was billed.
+All from [`metrics/runs.jsonl`](metrics/runs.jsonl), the CI logs and the holdout repository, for five specs and nine agent runs. That is a worked example, not a benchmark. Model: Claude Code's default, which was `claude-fable-5-2` for runs 1 to 5 and `claude-opus-5-5` for runs 6 to 9; the wrapper does not choose one, so runs 6 to 9 are not a like-for-like comparison. Cost is the API-list-price estimate Claude Code reports; the runs were on a subscription, so it is not what was billed.
 
 | Run | Spec | Agent | Commits | Gates | Holdout scenarios | 1M-row upload |
 |-----|------|-------|---------|-------|-------------------|---------------|
@@ -50,6 +51,8 @@ All from [`metrics/runs.jsonl`](metrics/runs.jsonl), the CI logs and the holdout
 | 5 | PRP-005 1.2 | 149 turns, 31.9 min, $15.22 | 5 | all pass | 270 / 270, and 360 / 360, 509 / 509 for the earlier specs | 9.7 s local; 5.9 s on CI, with `/mcp` mapped |
 | 6 | PRP-005 2.0 | 49 turns, 12.1 min, $2.46 | 3 | all pass | 293 / 293, and 360 / 360, 509 / 509 for the earlier specs | 12.8 s local; 8.0 s on CI |
 | 7 | PRP-003 1.1 | 74.5 min, $6.01 (turns: see below) | 3 | all pass | 88 / 88, and 293 / 293, 360 / 360, 509 / 509 for the earlier specs | 8.9 s local; 6.0, 8.0 s on CI |
+| 8 | PRP-004 1.1 | 28.6 min, $7.37 (turns: see below) | 6 | all pass | 97 / 97, and 293 / 293, 88 / 88, 509 / 509, 360 / 360 for the earlier specs | 10.5 s local; 7.1 s on CI, after run 9 |
+| 9 | PRP-004 1.2 | 14.9 min, $2.54 (turns: see below) | 1 | all pass | not re-run: tests only; all pass on CI after the merge | not re-run |
 
 Run 4's PRP-002 budgets (p95 of 200 "as known at" reads after a 1M-row upload and a 100k-row correction, and of 20 snapshot creations, budget 100 ms each): 3.7 ms and 5.9 ms locally, 2.2 ms and 1.6 ms on CI.
 
@@ -57,13 +60,15 @@ Run 5's PRP-005 budget (p95 of 200 `get_compensation` tool calls with `knownAt` 
 
 Run 7's PRP-003 budget (p95 of 200 as-of reads with `knownAt` and `include=computed` on the same data, budget 100 ms): 3.1 ms locally, 2.3 ms on CI. The same reads without `include` took 3.3 ms locally and 2.2 ms in that CI run. The first CI run on `main` passed this gate without printing it, because the load summary filter in `ci.yml` did not list the line; that is fixed.
 
-Minutes are the wall clock of the agent process. For run 4, Claude Code reported 6 turns and 1.5 minutes, far less than the 27.9 minutes the process ran: its counters covered only the end of the session, most likely the part after the agent waited for background work. Its cost covers the whole session. The turn count is therefore unknown, as it is for run 7 (2 turns and 0.8 minutes reported, 74.5 minutes run), and [`metrics/README.md`](metrics/README.md) records the clarification.
+Run 8's PRP-004 budgets (on the same data: one export of the 500,001 values in effect on a date, request to last byte, budget 30 s; memory growth of that export in a fresh API process, budget 64 MiB; one upload while an export is open and paused, budget 10 s): 4.1 s, 15.3 MiB and 0.05 s locally; 3.2 s, 10.1 MiB and 0.03 s on CI after run 9.
+
+Minutes are the wall clock of the agent process. For run 4, Claude Code reported 6 turns and 1.5 minutes, far less than the 27.9 minutes the process ran: its counters covered only the end of the session, most likely the part after the agent waited for background work. Its cost covers the whole session. The turn count is therefore unknown, as it is for runs 7 to 9 (2, 2 and 10 turns and 0.8, 0.3 and 8.8 minutes reported, against 74.5, 28.6 and 14.9 minutes run), and [`metrics/README.md`](metrics/README.md) records the clarification.
 
 With the definitions fixed in [`metrics/README.md`](metrics/README.md) before the first run:
 
-- **First-attempt success:** 6 of 7 spec versions (PRP-001 1.4 and 2.0, PRP-002 1.2, PRP-005 1.2 and 2.0, PRP-003 1.1). One deviation from the definition: it asks for the holdout scenarios and load gate to pass in CI on the agent's branch. CI isn't run on agent branches, so both ran locally on the branch's image, and CI passed afterwards on `main` with the same code.
-- **Merged without human edits:** 6 of 6 merges. No human commit touches `src/`, `tests/` or `db/`. The agents wrote 64 files, 10,737 lines including tests (278 unit, 744 integration).
-- **Cost:** PRP-001 $24.27 and 65.5 minutes of agent time over three runs, the failed one included; PRP-002 $13.42 and 27.9 minutes in one run; PRP-005 $17.68 and 44.0 minutes over two runs (1.2, then 2.0); PRP-003 $6.01 and 74.5 minutes in one run.
+- **First-attempt success:** 8 of 9 spec versions (PRP-001 1.4 and 2.0, PRP-002 1.2, PRP-005 1.2 and 2.0, PRP-003 1.1, PRP-004 1.1 and 1.2). PRP-004 1.1 meets the definition, but after its merge one of its own integration tests failed on CI on `main`; see below. One deviation from the definition: it asks for the holdout scenarios and load gate to pass in CI on the agent's branch. CI isn't run on agent branches, so both ran locally on the branch's image, and CI passed afterwards on `main` with the same code.
+- **Merged without human edits:** 8 of 8 merges. No human commit touches `src/`, `tests/` or `db/`. The agents wrote 70 files, 12,302 lines including tests (313 unit, 791 integration).
+- **Cost:** PRP-001 $24.27 and 65.5 minutes of agent time over three runs, the failed one included; PRP-002 $13.42 and 27.9 minutes in one run; PRP-005 $17.68 and 44.0 minutes over two runs (1.2, then 2.0); PRP-003 $6.01 and 74.5 minutes in one run; PRP-004 $9.91 and 43.5 minutes over two runs (1.1, then 1.2 for a test fix). All nine runs: $71.29.
 - **Memory:** peak RSS between 112.1 and 123.3 MiB in every load run, for 100k and for 1M rows (budget 300 MiB). Going from 100k to 1M rows never added more than 0.9 MiB (budget 64 MiB), so the upload streams.
 
 ### What went wrong, and what changed because of it
@@ -80,9 +85,11 @@ With the definitions fixed in [`metrics/README.md`](metrics/README.md) before th
 - **Writing PRP-003's scenarios found a race in its own spec.** Version 1.0 let a current read without `knownAt` take the input values and the next `ALLOWANCE` date in two statements; under `READ COMMITTED` a batch can commit between them, and the totals would then be cut by an allowance the answer does not show. Spec 1.1 asks for one statement or one `REPEATABLE READ` transaction, and the agent used one statement. Five smaller gaps were closed in the same version, all before the agent started. The holdout cannot force that interleaving from outside, and the spec says so.
 - **Run 7 could not run `tools/verify.sh`.** The allow rule matches the exact command `bash tools/verify.sh`, and the agent's call did not match it, so it ran the four gates one by one; the wrapper ran `verify.sh` itself afterwards. Its measure-only task T3 became an empty commit that carries the numbers.
 - **Updating the scenarios for 2.0 showed that a 1.3 rule could not be met.** 1.3 said a string argument .NET cannot decode (an unpaired surrogate such as `\ud800`) is a `400` tool error. The rule came from the agent's own note, and no test checked it. The MCP SDK refuses that request while reading its parameters, before any tool runs, as reproduced in a local test. 2.0 makes it a protocol error, the 1.3 code already passed the new scenarios, and run 6 added the missing test.
-- **One of the agents' tests is flaky.** PRP-002's A8 test (a read waits for a 1M-row batch being applied) failed once in run 6 and once on CI on `main` (run 43706843465), on a commit that changed only documentation; the rerun passed. The service answered correctly: the test takes its instant as soon as it sees the batch's lock, but the batch fixes its apply time one statement later, so under load the instant can come first and `404` is the right answer. PRP-004 task T0 asks the agent to fix the test, so the code stays free of human edits.
+- **One of the agents' tests is flaky.** PRP-002's A8 test (a read waits for a 1M-row batch being applied) failed once in run 6 and once on CI on `main` (run 43706843465), on a commit that changed only documentation; the rerun passed. The service answered correctly: the test takes its instant as soon as it sees the batch's lock, but the batch fixes its apply time one statement later, so under load the instant can come first and `404` is the right answer. PRP-004 task T0 had the agent fix the test in run 8, so the code stays free of human edits.
+- **Run 8 merged green and turned `main` red.** Its holdout scenarios and load gate passed on its image, but one of its own integration tests failed on CI after the merge (run 43722022445). The test searched every export log entry of its class for forbidden values, and another test of the class legitimately logs an `AsOf` of 2025-07-01, which was on the list; test order is not fixed, so it had passed locally. The service was right. PRP-004 1.2 gave the agent one test-only task; run 9 fixed it, found the same leak by chance in two more log tests, and `main` was green again after its merge. The residue it reported is still open: a forbidden amount such as `6000` can match digits of a test's own ids or instants (about 0.1 to 0.2% per run, by its estimate).
+- **A PRP-002 holdout scenario contradicted PRP-004.** It listed `/api/v1/snapshots/{id}/export` among the paths that must be `404`, and PRP-004 adds that path. Run 8's code failed it as intended; the scenario was fixed, not the code.
 
-Not yet measured: the CI AI review has not run, because the repository has no API key set yet, and no defects after merge have been recorded (the flaky A8 test is a fault in a test, not a broken rule of a spec).
+Not yet measured: the CI AI review has not run, because the repository has no API key set yet, and no defects after merge have been recorded (the flaky A8 test and run 8's logging test are faults in tests, not broken rules of a spec).
 
 ## Repository
 
