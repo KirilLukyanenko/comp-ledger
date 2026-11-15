@@ -13,7 +13,7 @@ The service is the vehicle. The point is the process around it: how to hand a fe
 | [PRP-003](specs/003-computed-fields.prp.md) | Computed fields on request (`include=computed`): target bonus, total fixed pay and total target cash, from the same values as the read, so they work with "as known at" and snapshots | Implemented, version 1.2 |
 | [PRP-005](specs/005-mcp-server.prp.md) | An MCP server inside the API at `/mcp`: seven tools that are the read and snapshot endpoints, with the same inputs, answers, errors and tenant check | Implemented, version 2.1 |
 
-Next: streaming export (PRP-004). Its number was reserved before the MCP server was specified.
+Next: streaming export ([PRP-004](specs/004-streaming-export.prp.md), draft 1.0). Its number was reserved before the MCP server was specified.
 
 ## How a feature gets built
 
@@ -80,8 +80,9 @@ With the definitions fixed in [`metrics/README.md`](metrics/README.md) before th
 - **Writing PRP-003's scenarios found a race in its own spec.** Version 1.0 let a current read without `knownAt` take the input values and the next `ALLOWANCE` date in two statements; under `READ COMMITTED` a batch can commit between them, and the totals would then be cut by an allowance the answer does not show. Spec 1.1 asks for one statement or one `REPEATABLE READ` transaction, and the agent used one statement. Five smaller gaps were closed in the same version, all before the agent started. The holdout cannot force that interleaving from outside, and the spec says so.
 - **Run 7 could not run `tools/verify.sh`.** The allow rule matches the exact command `bash tools/verify.sh`, and the agent's call did not match it, so it ran the four gates one by one; the wrapper ran `verify.sh` itself afterwards. Its measure-only task T3 became an empty commit that carries the numbers.
 - **Updating the scenarios for 2.0 showed that a 1.3 rule could not be met.** 1.3 said a string argument .NET cannot decode (an unpaired surrogate such as `\ud800`) is a `400` tool error. The rule came from the agent's own note, and no test checked it. The MCP SDK refuses that request while reading its parameters, before any tool runs, as reproduced in a local test. 2.0 makes it a protocol error, the 1.3 code already passed the new scenarios, and run 6 added the missing test.
+- **One of the agents' tests is flaky.** PRP-002's A8 test (a read waits for a 1M-row batch being applied) failed once in run 6 and once on CI on `main` (run 43706843465), on a commit that changed only documentation; the rerun passed. The service answered correctly: the test takes its instant as soon as it sees the batch's lock, but the batch fixes its apply time one statement later, so under load the instant can come first and `404` is the right answer. PRP-004 task T0 asks the agent to fix the test, so the code stays free of human edits.
 
-Not yet measured: the CI AI review has not run, because the repository has no API key set yet, and no defects after merge have been recorded.
+Not yet measured: the CI AI review has not run, because the repository has no API key set yet, and no defects after merge have been recorded (the flaky A8 test is a fault in a test, not a broken rule of a spec).
 
 ## Repository
 
