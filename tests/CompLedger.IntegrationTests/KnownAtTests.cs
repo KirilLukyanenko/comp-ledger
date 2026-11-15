@@ -574,6 +574,29 @@ public sealed class KnownAtTests(ApiFactory api) : IClassFixture<ApiFactory>
             await Task.Delay(TimeSpan.FromMilliseconds(2), Ct);
         }
 
+        // The ingestor reads the batch's apply time in the statement after the lock. "Now" is taken only once its
+        // backend runs a later statement, so the apply time is fixed and is before "now".
+        var holder = await monitor.ExecuteScalarAsync<int>(
+            """
+            SELECT pid FROM pg_locks
+            WHERE locktype = 'advisory' AND mode = 'ExclusiveLock' AND granted AND objsubid = 1
+              AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(@tenant, 0)
+            """,
+            new { tenant = tenant.ToString("D") });
+        while (!await monitor.ExecuteScalarAsync<bool>(
+                   """
+                   SELECT EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                     WHERE pid = @holder
+                       AND query NOT LIKE '%pg_advisory_xact_lock%' AND query NOT LIKE '%clock_timestamp()%')
+                   """,
+                   new { holder }))
+        {
+            Assert.False(upload.IsCompleted, "The upload finished before its apply time was seen to be fixed.");
+            Assert.True(DateTime.UtcNow < deadline, "The upload never got past its apply time.");
+            await Task.Delay(TimeSpan.FromMilliseconds(2), Ct);
+        }
+
         var now = Instants.Write(await monitor.ExecuteScalarAsync<DateTime>("SELECT clock_timestamp()"));
         var waiting = _client.GetAsync($"/api/v1/employees/E-0500000/compensation?asOf=2026-03-01&knownAt={now}", tenant);
 

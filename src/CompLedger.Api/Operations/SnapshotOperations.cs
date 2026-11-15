@@ -132,7 +132,7 @@ public sealed partial class SnapshotOperations(SnapshotStore snapshots, Compensa
     /// The snapshot of this tenant, or null. Only the hyphenated 8-4-4-4-12 form is an id, in either case; an id of
     /// another tenant must look the same as a missing one.
     /// </summary>
-    private async Task<Snapshot?> FindAsync(Guid tenantId, string snapshotId, CancellationToken cancellationToken) =>
+    internal async Task<Snapshot?> FindAsync(Guid tenantId, string snapshotId, CancellationToken cancellationToken) =>
         HyphenatedUuid().IsMatch(snapshotId) && Guid.TryParseExact(snapshotId, "D", out var id)
             ? await snapshots.FindAsync(tenantId, id, cancellationToken)
             : null;
@@ -144,7 +144,7 @@ public sealed partial class SnapshotOperations(SnapshotStore snapshots, Compensa
     private static SnapshotResponse ToResponse(Snapshot snapshot) =>
         new(snapshot.SnapshotId, snapshot.Name, snapshot.AsOf, KnownAt.Format(snapshot.KnownAt));
 
-    private static OperationResult SnapshotNotFound() => OperationResult.Problem(StatusCodes.Status404NotFound, "The snapshot does not exist.");
+    internal static OperationResult SnapshotNotFound() => OperationResult.Problem(StatusCodes.Status404NotFound, "The snapshot does not exist.");
 
     [LoggerMessage(
         Level = LogLevel.Information,

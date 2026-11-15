@@ -4,6 +4,7 @@ using CompLedger.Api.Mcp;
 using CompLedger.Api.Operations;
 using CompLedger.Api.Tenancy;
 using CompLedger.Infrastructure.Db;
+using CompLedger.Infrastructure.Export;
 using CompLedger.Infrastructure.Ingestion;
 using CompLedger.Infrastructure.Queries;
 using CompLedger.Infrastructure.Snapshots;
@@ -24,6 +25,7 @@ builder.Services.AddSingleton<TenantStore>();
 builder.Services.AddSingleton<PostgresIngestor>();
 builder.Services.AddSingleton<CompensationQueries>();
 builder.Services.AddSingleton<SnapshotStore>();
+builder.Services.AddSingleton<ExportQuery>();
 
 // One handler per operation, shared by the REST endpoints and the MCP tools.
 builder.Services.AddSingleton<CompensationOperations>();
@@ -68,6 +70,7 @@ if (app.Configuration.GetValue<bool>("TenantAdminApi:Enabled"))
 app.MapIngestionEndpoints(app.Configuration.GetValue<long?>("Ingestion:MaxBodyBytes") ?? IngestionEndpoints.DefaultMaxBodyBytes);
 app.MapCompensationEndpoints();
 app.MapSnapshotEndpoints();
+app.MapExportEndpoints();
 
 // After the tenant middleware: no MCP message is processed without a known tenant.
 app.MapMcp(TenantResolutionMiddleware.McpPath).RequireTenant();
