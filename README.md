@@ -4,6 +4,13 @@ A multi-tenant compensation data service (.NET 10, PostgreSQL 17) whose code is 
 
 The service is the vehicle. The point is the process around it: how to hand a feature to an AI agent and trust what comes back. Humans write the specs and own the checks; agents write the code. Every agent run is logged with its cost and outcome, failed runs included, and the numbers below come only from that log.
 
+**At a glance**
+
+- 5 specs implemented end to end by Claude Code agents. No human commit touches `src/`, `tests/` or `db/`.
+- Checked by 1,347 holdout scenarios the agents never see, plus a load gate: 1M rows ingested in about 7 s, a 500k-row CSV export in about 3 s, memory flat.
+- 9 logged agent runs, $71.29 at API prices, 8 of 9 spec versions passed on the first attempt. Failures are listed with what changed because of them ([below](#what-went-wrong-and-what-changed-because-of-it)).
+- .NET 10, PostgreSQL 17 with row-level security, an MCP server tried live from Claude Code.
+
 ## Status
 
 | Spec | What it covers | Status |
